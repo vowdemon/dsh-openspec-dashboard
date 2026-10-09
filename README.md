@@ -13,15 +13,13 @@ DeepSeek Harness 右侧栏 OpenSpec 看板，无需安装 OpenSpec CLI。仅支�
 直接从 [GitHub](https://github.com/vowdemon/dsh-openspec-dashboard) 安装，无需克隆或构建：
 
 ```sh
-dsh plugin --profile desktop add github:vowdemon/dsh-openspec-dashboard#v0.0.1
+dsh plugin --profile desktop add github:vowdemon/dsh-openspec-dashboard
 ```
 
 独立的 `dsh web` 使用另一条命令：
 
 ```sh
-dsh plugin --profile web add github:vowdemon/dsh-openspec-dashboard#v0.0.1
+dsh plugin --profile web add github:vowdemon/dsh-openspec-dashboard
 ```
 
 安装后从右侧栏“添加标签页”选择 **OpenSpec 看板**；Web 服务需重启并刷新页面。
-
-开发时运行 `pnpm install --frozen-lockfile && pnpm run verify`，并提交生成的 `dist/index.js` 与 `dist/client.js`。
