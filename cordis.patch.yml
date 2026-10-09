@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-openspec-dashboard
+      name: 'dsh-openspec-dashboard'
+      config: {}

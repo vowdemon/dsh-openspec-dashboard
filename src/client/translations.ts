@@ -1,0 +1,43 @@
+export const copy = {
+  zh: {
+    title: 'OpenSpec 看板', guide: 'OpenSpec 看板', description: '变更进度和规格状态',
+    changesView: '变更', specsView: '规格', current: '当前', active: '活动', archive: '归档', all: '全部',
+    files: '文件', tasks: '任务', search: '搜索名称',
+    countUnit: '个',
+    preparing: '筹划', archived: '归档', underway: '进行', done: '完成', noTasks: '暂无任务',
+    goalTag: '目标', designTag: '设计', tasksTag: '任务', specTag: '规格', otherTag: '其他',
+    changedSpec: '变更', newSpec: '新增', confirmedSpec: '确认',
+    ungrouped: '其他任务', groupDone: '完成', groupOngoing: '进行',
+    taskConflict: '任务文件已变化，请重新加载页面确认后再试。', taskWriteError: '任务未保存，请重试。',
+    taskReadOnly: '此会话为只读，无法修改任务。',
+    taskSessionMissing: '会话已失效，请重新打开会话后重试。', taskAuthError: '写入未通过验证，请重新加载页面后重试。',
+    taskPolicyUnknown: '无法核对会话权限，未修改文件。',
+    openTasks: '打开 tasks.md', openFile: '打开文件', show: '展开', hide: '收起',
+    loading: '正在读取 OpenSpec…', noWorkspace: '请先打开一个工作区会话。',
+    noOpenSpec: '尚未发现 OpenSpec 目录。', emptyChanges: '暂无变更。', noFiles: '暂无 Markdown 文档。',
+    emptyArchive: '暂无归档变更。', emptySpecs: '暂无规格。', noMatches: '没有匹配结果。',
+    readError: '暂时无法读取看板，请重新加载页面。', openError: '暂时无法打开文档',
+  },
+  en: {
+    title: 'OpenSpec', guide: 'OpenSpec dashboard', description: 'Change progress and spec status',
+    changesView: 'Change', specsView: 'Spec', current: 'Current', active: 'Active', archive: 'Archive', all: 'All',
+    files: 'Files', tasks: 'Tasks', search: 'Search names',
+    countUnit: ' ',
+    preparing: 'Planning', archived: 'Archived', underway: 'In progress', done: 'Done', noTasks: 'No tasks yet',
+    goalTag: 'Goal', designTag: 'Design', tasksTag: 'Tasks', specTag: 'Spec', otherTag: 'Other',
+    changedSpec: 'Changed', newSpec: 'New', confirmedSpec: 'Confirmed',
+    ungrouped: 'Other tasks', groupDone: 'Done', groupOngoing: 'In progress',
+    taskConflict: 'Tasks changed elsewhere. Reload the page, review, then retry.', taskWriteError: 'Task not saved. Retry.',
+    taskReadOnly: 'This session is read-only. Tasks cannot be edited.',
+    taskSessionMissing: 'Session unavailable. Reopen it and retry.', taskAuthError: 'Write request was not authenticated. Reload the page and retry.',
+    taskPolicyUnknown: 'Could not verify session permission; the file was not modified.',
+    openTasks: 'Open tasks.md', openFile: 'Open file', show: 'Expand', hide: 'Collapse',
+    loading: 'Reading OpenSpec…', noWorkspace: 'Open a workspace session first.',
+    noOpenSpec: 'No OpenSpec directory found.', emptyChanges: 'No changes yet.', noFiles: 'No Markdown files yet.',
+    emptyArchive: 'No archived changes.', emptySpecs: 'No specs yet.', noMatches: 'No matches.',
+    readError: 'Unable to read the dashboard. Reload the page to retry.', openError: 'Unable to open document',
+  },
+};
+
+export const NS = 'openspecDashboard';
+export type Translate = (key: string) => string;

@@ -1,0 +1,48 @@
+{
+  "name": "dsh-openspec-dashboard",
+  "version": "0.0.1",
+  "private": true,
+  "packageManager": "pnpm@11.7.0",
+  "engines": { "node": ">=24" },
+  "type": "module",
+  "description": "OpenSpec dashboard with guarded task checkboxes in the DeepSeek Harness right sidebar",
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./dist/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "dist/index.js",
+    "dist/client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "icon": "./icon.svg",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/build.mjs && node --test test/*.test.js",
+    "verify": "tsc --noEmit && node scripts/build.mjs && node --check dist/index.js && node --check dist/watch.js && node --check dist/client.js && node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.2",
+    "esbuild-wasm": "0.25.12",
+    "typescript": "5.9.3"
+  }
+}

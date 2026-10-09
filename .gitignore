@@ -1,0 +1,7 @@
+node_modules/
+dist/*
+!dist/index.js
+!dist/client.js
+*.tsbuildinfo
+.DS_Store
+*.log
