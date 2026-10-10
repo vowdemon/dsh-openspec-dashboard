@@ -19,9 +19,13 @@ function FileList({ files, openFile, t, isCurrentSpec = false }: { files: BoardF
 function ChangeRow({ change, openFile, t, collapsed = {}, toggleGroup, pendingTask, taskFeedback, toggleTask }: { change: Change; openFile: (path: string) => void; t: Translate; collapsed?: Record<string, boolean>; toggleGroup: (key: string, folded: boolean) => void; pendingTask?: { lineNumber: number; done: boolean } | null; taskFeedback?: { lineNumber: number; message: string } | null; toggleTask: (change: Change, task: Task) => void }) {
   const [expanded, setExpanded] = React.useState(false);
   const [subview, setSubview] = React.useState('files');
+  const [incompleteOnly, setIncompleteOnly] = React.useState(false);
   const initialFolds = React.useRef(new Map<string, boolean>());
   const status = changeStatus(change);
   const displayDone = (task: Task) => pendingTask?.lineNumber === task.lineNumber ? pendingTask.done : task.done;
+  const visibleGroups = (change.groups || []).map((group) => ({ group,
+    items: incompleteOnly ? group.items.filter((task) => !displayDone(task)) : group.items,
+  })).filter(({ items }) => items.length > 0);
   return h('article', { className: 'osd-card', 'data-archived': String(change.archived) },
     h('button', { type: 'button', className: 'osd-row', 'aria-expanded': expanded,
       'aria-label': (expanded ? t('hide') : t('show')) + ': ' + change.title,
@@ -35,12 +39,17 @@ function ChangeRow({ change, openFile, t, collapsed = {}, toggleGroup, pendingTa
           'aria-valuemin': 0, 'aria-valuemax': change.tasks.length, 'aria-valuenow': change.done,
         }, h('span', { style: { width: (change.done / change.tasks.length * 100) + '%' } })))),
     expanded && h('div', { className: 'osd-children' },
-      h('div', { className: 'osd-child-tabs' }, ['files', 'tasks'].map((name) =>
-        h('button', { key: name, className: 'osd-control', type: 'button', 'aria-pressed': subview === name,
-          onClick: () => setSubview(name) }, t(name)))),
+      h('div', { className: 'osd-child-tabs' },
+        h('div', { className: 'osd-child-tab-buttons' }, ['files', 'tasks'].map((name) =>
+          h('button', { key: name, className: 'osd-control', type: 'button', 'aria-pressed': subview === name,
+            onClick: () => setSubview(name) }, t(name)))),
+        subview === 'tasks' && h('label', { className: 'osd-incomplete-filter' },
+          h('input', { type: 'checkbox', checked: incompleteOnly,
+            onChange: (event: { currentTarget: { checked: boolean } }) => setIncompleteOnly(event.currentTarget.checked) }),
+          h('span', null, t('incompleteOnly')))),
       subview === 'files' ? h(FileList, { files: change.files, openFile, t }) :
         change.tasks.length ? h('div', null,
-          change.groups.map((group) => {
+          visibleGroups.length ? visibleGroups.map(({ group, items }) => {
             const groupKey = change.directory + ':' + group.id;
             const completed = group.items.filter((task) => task.done).length;
             const finished = completed === group.items.length;
@@ -54,7 +63,7 @@ function ChangeRow({ change, openFile, t, collapsed = {}, toggleGroup, pendingTa
                 h(Tag, { kind: finished ? 'groupDone' : 'groupOngoing',
                   label: t(finished ? 'groupDone' : 'groupOngoing') }),
                 h('span', { className: 'osd-chevron', 'aria-hidden': true }, folded ? '▸' : '▾')),
-              !folded && h('div', null, group.items.map((task) =>
+              !folded && h('div', null, items.map((task) =>
                 h('div', { key: task.lineNumber, className: 'osd-task-row' },
                   h('div', { className: 'osd-task', 'data-done': String(displayDone(task)) },
                     h('input', { type: 'checkbox', checked: displayDone(task),
@@ -67,7 +76,7 @@ function ChangeRow({ change, openFile, t, collapsed = {}, toggleGroup, pendingTa
                     h('span', null, task.text)),
                   taskFeedback?.lineNumber === task.lineNumber && h('p', {
                     className: 'osd-task-feedback', role: 'alert' }, taskFeedback.message)))));
-          }),
+          }) : h('div', { className: 'osd-state' }, t('noIncompleteTasks')),
           change.tasksPath && h('button', { type: 'button', className: 'osd-file',
             onClick: () => openFile(change.tasksPath!) }, t('openTasks'))) :
           h('div', { className: 'osd-state' }, t('noTasks'))));

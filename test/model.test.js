@@ -88,6 +88,8 @@ test('Chinese views use localized names without a manual refresh control', () =>
   assert.equal(translations.zh.newSpec, '新增');
   assert.equal(translations.zh.confirmedSpec, '确认');
   assert.equal(translations.zh.countUnit, '个');
+  assert.equal(translations.zh.incompleteOnly, '仅看未完成');
+  assert.equal(translations.en.incompleteOnly, 'Incomplete only');
   assert.equal(translations.en.countUnit, ' ');
   assert.equal(translations.zh.preparing, '筹划');
   assert.equal(translations.zh.underway, '进行');
@@ -534,10 +536,105 @@ test('file-row action hands the selected file to DSH navigation', () => {
   assert.equal(statusTag.type(statusTag.props).children[0], '筹划');
 });
 
+test('each change has its own accessible incomplete-only checkbox beside the task tab', () => {
+  const original = React.useState;
+  const instances = new Map();
+  let active;
+  let cursor;
+  React.useState = (initial) => {
+    const index = cursor++;
+    const slots = instances.get(active);
+    if (!(index in slots)) slots[index] = index === 0 ? true : index === 1 ? 'tasks' : initial;
+    return [slots[index], (value) => { slots[index] = value; }];
+  };
+  const visit = (node, predicate, result = []) => {
+    if (Array.isArray(node)) { node.forEach((child) => visit(child, predicate, result)); return result; }
+    if (!node || typeof node !== 'object') return result;
+    if (predicate(node)) result.push(node);
+    (node.children || []).forEach((child) => visit(child, predicate, result));
+    return result;
+  };
+  try {
+    const groups = parseTaskGroups('## Build\n- [ ] First');
+    const render = (directory) => {
+      active = directory;
+      cursor = 0;
+      if (!instances.has(directory)) instances.set(directory, []);
+      return ChangeRow({ change: { title: directory, directory, archived: false, groups,
+        tasks: groups[0].items, done: 0, tasksVersion: 'v1' },
+        openFile() {}, toggleGroup() {}, toggleTask() {}, t: (value) => value });
+    };
+    const filter = (directory) => visit(render(directory), (node) => node.props.className === 'osd-incomplete-filter')[0];
+    const first = filter('/repo/first');
+    const second = filter('/repo/second');
+    assert.equal(first.type, 'label');
+    assert.equal(first.children[1].children[0], 'incompleteOnly');
+    assert.equal(first.children[0].props.checked, false);
+    assert.equal(second.children[0].props.checked, false);
+    first.children[0].props.onChange({ currentTarget: { checked: true } });
+    assert.equal(filter('/repo/first').children[0].props.checked, true);
+    assert.equal(filter('/repo/second').children[0].props.checked, false);
+    const tabs = visit(render('/repo/first'), (node) => node.props.className === 'osd-child-tabs')[0];
+    assert.equal(tabs.children[0].children[0][1].children[0], 'tasks');
+    assert.match(source, /\.osd-child-tabs \{[^}]*flex-wrap:wrap/);
+    assert.match(source, /\.osd-incomplete-filter \{[^}]*margin-left:auto/);
+  } finally { React.useState = original; }
+});
+
+test('incomplete filter hides completed tasks and empty groups without changing progress', () => {
+  const original = React.useState;
+  const slots = [true, 'tasks', false];
+  let cursor = 0;
+  React.useState = (initial) => {
+    const index = cursor++;
+    return [slots[index] ?? initial, (value) => { slots[index] = value; }];
+  };
+  const visit = (node, predicate, result = []) => {
+    if (Array.isArray(node)) { node.forEach((child) => visit(child, predicate, result)); return result; }
+    if (!node || typeof node !== 'object') return result;
+    if (predicate(node)) result.push(node);
+    (node.children || []).forEach((child) => visit(child, predicate, result));
+    return result;
+  };
+  try {
+    const groups = parseTaskGroups('## Done\n- [x] Finished\n## Build\n- [x] Built\n- [ ] Next');
+    const change = { title: 'demo', directory: '/repo/demo', archived: false, groups,
+      tasks: groups.flatMap((group) => group.items), done: 2, tasksVersion: 'v1' };
+    const collapsed = { '/repo/demo:1': false, '/repo/demo:3': false };
+    const render = () => { cursor = 0; return ChangeRow({ change, collapsed,
+      openFile() {}, toggleTask() {}, toggleGroup() {}, t: (key) => key }); };
+    const filter = (row) => visit(row, (node) => node.props.className === 'osd-incomplete-filter')[0].children[0];
+    const groupsIn = (row) => visit(row, (node) => node.props.className === 'osd-group');
+    const tasksIn = (row) => visit(row, (node) => node.props.className === 'osd-task-row');
+    const initial = render();
+    assert.equal(groupsIn(initial).length, 2);
+    assert.equal(tasksIn(initial).length, 3);
+    assert.equal(filter(initial).props.checked, false);
+    filter(initial).props.onChange({ currentTarget: { checked: true } });
+    const filtered = render();
+    assert.equal(groupsIn(filtered).length, 1);
+    assert.equal(tasksIn(filtered).length, 1);
+    assert.equal(tasksIn(filtered)[0].children[0].children[1].children[0], 'Next');
+    assert.equal(visit(filtered, (node) => node.props.className === 'osd-group-count')[0].children[0], '1/2');
+    assert.equal(visit(filtered, (node) => node.props.role === 'progressbar')[0].props['aria-valuenow'], 2);
+    assert.equal(visit(filtered, (node) => node.props.className === 'osd-status osd-muted')[0].children[0].children[0], '2/3');
+    assert.equal(collapsed['/repo/demo:1'], false);
+    change.groups[1].items[1].done = true;
+    change.done = 3;
+    const empty = render();
+    assert.equal(groupsIn(empty).length, 0);
+    assert.equal(visit(empty, (node) => node.props.className === 'osd-state')[0].children[0], 'noIncompleteTasks');
+    filter(empty).props.onChange({ currentTarget: { checked: false } });
+    assert.equal(groupsIn(render()).length, 2);
+    assert.equal(tasksIn(render()).length, 3);
+  } finally { React.useState = original; }
+});
+
 test('finished task groups start folded without collapsing an opened group after completion', () => {
   const originals = { useState: React.useState, useRef: React.useRef };
   const defaults = { current: new Map() };
-  React.useState = (value) => [value === false ? true : value === 'files' ? 'tasks' : value, () => {}];
+  let hook = 0;
+  React.useState = (value) => [hook++ % 3 === 2 ? false : value === false ? true : value === 'files' ? 'tasks' : value, () => {}];
   React.useRef = () => defaults;
   try {
     const groups = parseTaskGroups('## Done\n- [x] First\n## Next\n- [ ] Second');
@@ -571,7 +668,8 @@ test('finished task groups start folded without collapsing an opened group after
 
 test('task subview exposes only checkbox edits, and archived tasks are disabled', () => {
   const original = React.useState;
-  React.useState = (value) => [value === false ? true : value === 'files' ? 'tasks' : value, () => {}];
+  let hook = 0;
+  React.useState = (value) => [hook++ % 3 === 2 ? false : value === false ? true : value === 'files' ? 'tasks' : value, () => {}];
   try {
     const groups = parseTaskGroups('## Build\n- [ ] First');
     const change = { title: 'demo', summary: '', archived: false, directory: '/repo/demo',
@@ -587,7 +685,7 @@ test('task subview exposes only checkbox edits, and archived tasks are disabled'
     const props = { change, t: (value) => value, openFile() {}, collapsed: {},
       toggleGroup: (key) => calls.push(key), toggleTask: (_, task) => calls.push(task.lineNumber) };
     const row = ChangeRow(props);
-    const inputs = visit(row, (node) => node.type === 'input');
+    const inputs = visit(row, (node) => node.type === 'input' && node.props['aria-label'] === 'First');
     assert.equal(inputs.length, 1);
     assert.equal(inputs[0].props.disabled, false);
     inputs[0].props.onChange();
@@ -604,7 +702,7 @@ test('task subview exposes only checkbox edits, and archived tasks are disabled'
     groupButton.props.onClick();
     assert.deepEqual(calls, [2, '/repo/demo:1']);
     const pending = ChangeRow({ ...props, pendingTask: { lineNumber: 2, done: true } });
-    const pendingInput = visit(pending, (node) => node.type === 'input')[0];
+    const pendingInput = visit(pending, (node) => node.type === 'input' && node.props['aria-label'] === 'First')[0];
     assert.equal(pendingInput.props.checked, true);
     const event = { currentTarget: { checked: false } };
     pendingInput.props.onChange(event);
@@ -615,11 +713,54 @@ test('task subview exposes only checkbox edits, and archived tasks are disabled'
     const undo = ChangeRow({ ...props, change: { ...change, tasks: [{ ...change.tasks[0], done: true }],
       groups: [{ ...groups[0], items: [{ ...groups[0].items[0], done: true }] }] },
       collapsed: { '/repo/demo:1': false }, pendingTask: { lineNumber: 2, done: false } });
-    assert.equal(visit(undo, (node) => node.type === 'input')[0].props.checked, false);
+    assert.equal(visit(undo, (node) => node.type === 'input' && node.props['aria-label'] === 'First')[0].props.checked, false);
     const failed = ChangeRow({ ...props, taskFeedback: { lineNumber: 2, message: 'Cannot write' } });
     assert.equal(visit(failed, (node) => node.props.role === 'alert')[0].children[0], 'Cannot write');
     const archived = ChangeRow({ ...props, change: { ...change, archived: true } });
-    assert.equal(visit(archived, (node) => node.type === 'input')[0].props.disabled, true);
+    assert.equal(visit(archived, (node) => node.type === 'input' && node.props['aria-label'] === 'First')[0].props.disabled, true);
+  } finally { React.useState = original; }
+});
+
+test('filter never edits tasks; optimistic completion and failed writes remain visible correctly', () => {
+  const original = React.useState;
+  const slots = [true, 'tasks', false];
+  let cursor = 0;
+  React.useState = (initial) => {
+    const index = cursor++;
+    return [slots[index] ?? initial, (value) => { slots[index] = value; }];
+  };
+  const visit = (node, predicate, result = []) => {
+    if (Array.isArray(node)) { node.forEach((child) => visit(child, predicate, result)); return result; }
+    if (!node || typeof node !== 'object') return result;
+    if (predicate(node)) result.push(node);
+    (node.children || []).forEach((child) => visit(child, predicate, result));
+    return result;
+  };
+  try {
+    const groups = parseTaskGroups('## Build\n- [ ] First');
+    const change = { title: 'demo', directory: '/repo/demo', archived: false, groups,
+      tasks: groups[0].items, done: 0, tasksVersion: 'v1' };
+    const writes = [];
+    const render = (extra = {}) => { cursor = 0; return ChangeRow({ change, collapsed: { '/repo/demo:1': false },
+      openFile() {}, toggleGroup() {}, toggleTask: (_, task) => writes.push(task.lineNumber),
+      t: (key) => key, ...extra }); };
+    const filter = (row) => visit(row, (node) => node.props.className === 'osd-incomplete-filter')[0].children[0];
+    const task = (row) => visit(row, (node) => node.type === 'input' && node.props['aria-label'] === 'First')[0];
+    filter(render()).props.onChange({ currentTarget: { checked: true } });
+    assert.deepEqual(writes, []);
+    task(render()).props.onChange({ currentTarget: { checked: true } });
+    assert.deepEqual(writes, [2]);
+    const optimistic = render({ pendingTask: { lineNumber: 2, done: true } });
+    assert.equal(task(optimistic), undefined);
+    assert.equal(visit(optimistic, (node) => node.props.className === 'osd-state')[0].children[0], 'noIncompleteTasks');
+    const rejected = render({ taskFeedback: { lineNumber: 2, message: 'Cannot write' } });
+    assert.equal(task(rejected).props.checked, false);
+    assert.equal(visit(rejected, (node) => node.props.role === 'alert')[0].children[0], 'Cannot write');
+    const archived = render({ change: { ...change, archived: true } });
+    assert.equal(task(archived).props.disabled, true);
+    assert.equal(filter(archived).props.disabled, undefined);
+    filter(archived).props.onChange({ currentTarget: { checked: false } });
+    assert.deepEqual(writes, [2]);
   } finally { React.useState = original; }
 });
 

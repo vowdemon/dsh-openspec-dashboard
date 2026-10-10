@@ -2,9 +2,9 @@ export const copy = {
   zh: {
     title: 'OpenSpec 看板', guide: 'OpenSpec 看板', description: '变更进度和规格状态',
     changesView: '变更', specsView: '规格', current: '当前', active: '活动', archive: '归档', all: '全部',
-    files: '文件', tasks: '任务', search: '搜索名称',
+    files: '文件', tasks: '任务', incompleteOnly: '仅看未完成', search: '搜索名称',
     countUnit: '个',
-    preparing: '筹划', archived: '归档', underway: '进行', done: '完成', noTasks: '暂无任务',
+    preparing: '筹划', archived: '归档', underway: '进行', done: '完成', noTasks: '暂无任务', noIncompleteTasks: '没有未完成任务',
     goalTag: '目标', designTag: '设计', tasksTag: '任务', specTag: '规格', otherTag: '其他',
     changedSpec: '变更', newSpec: '新增', confirmedSpec: '确认',
     ungrouped: '其他任务', groupDone: '完成', groupOngoing: '进行',
@@ -21,9 +21,9 @@ export const copy = {
   en: {
     title: 'OpenSpec', guide: 'OpenSpec dashboard', description: 'Change progress and spec status',
     changesView: 'Change', specsView: 'Spec', current: 'Current', active: 'Active', archive: 'Archive', all: 'All',
-    files: 'Files', tasks: 'Tasks', search: 'Search names',
+    files: 'Files', tasks: 'Tasks', incompleteOnly: 'Incomplete only', search: 'Search names',
     countUnit: ' ',
-    preparing: 'Planning', archived: 'Archived', underway: 'In progress', done: 'Done', noTasks: 'No tasks yet',
+    preparing: 'Planning', archived: 'Archived', underway: 'In progress', done: 'Done', noTasks: 'No tasks yet', noIncompleteTasks: 'No incomplete tasks',
     goalTag: 'Goal', designTag: 'Design', tasksTag: 'Tasks', specTag: 'Spec', otherTag: 'Other',
     changedSpec: 'Changed', newSpec: 'New', confirmedSpec: 'Confirmed',
     ungrouped: 'Other tasks', groupDone: 'Done', groupOngoing: 'In progress',
