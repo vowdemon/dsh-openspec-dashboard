@@ -1,4 +1,7 @@
 export const css = `
+  .osd-tab-title { display:inline-flex; align-items:center; gap:6px; min-width:0; max-width:100%; overflow:hidden; vertical-align:middle; color:inherit; }
+  .osd-tab-icon { display:block; flex:none; }
+  .osd-tab-title-label { display:block; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .osd { position:relative; box-sizing:border-box; height:100%; overflow:auto; padding:0 8px 28px; background:var(--dsw-alias-bg-base); color:var(--dsw-alias-label-primary); font:inherit; font-size:13px; line-height:1.5; }
   .osd * { box-sizing:border-box; } .osd button,.osd input { font:inherit; }
   .osd-controls { position:sticky; top:0; z-index:2; padding-top:16px; background:var(--dsw-alias-bg-base); box-shadow:0 1px 0 var(--dsw-alias-border-l1); }

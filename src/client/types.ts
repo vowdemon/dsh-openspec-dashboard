@@ -4,4 +4,5 @@ export interface ReactAPI {
   useState<T>(initial: T): [T, (next: T | ((current: T) => T)) => void];
   useRef<T>(initial: T): { current: T };
   useEffect(effect: () => void | (() => void), dependencies: readonly unknown[]): void;
+  useLayoutEffect(effect: () => void | (() => void), dependencies: readonly unknown[]): void;
 }

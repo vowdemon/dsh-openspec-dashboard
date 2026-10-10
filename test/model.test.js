@@ -12,6 +12,7 @@ const React = {
   createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
   useState: (initial) => [initial === false ? true : initial, () => {}],
   useRef: (initial) => ({ current: initial }),
+  useLayoutEffect: () => {},
 };
 runInNewContext(source, sandbox);
 const { model } = definition.factory((name) => { assert.equal(name, 'react'); return React; });
@@ -72,6 +73,46 @@ test('switching sidebar tabs retains the visited dashboard body', () => {
   assert.match(source, /data-kind="specTag"[^\n]*--osd-hue:#7955c3/);
 });
 
+test('sidebar title slot renders a themed document and task icon with localized label', () => {
+  const registrations = new Map();
+  let registration;
+  definition.factory(() => React).apply({ remote: {},
+    locale: { bind: () => (key) => key === 'title' ? 'OpenSpec 看板' : key, register: () => () => {} },
+    sidebarRightTabs: { register: (tab) => { registration = tab; return () => {}; } },
+    slots: { inject: (_name, callback) => callback(),
+      register: (meta, component) => { registrations.set(meta.name, { meta, component }); return () => {}; } },
+    effect: (callback, label) => label.includes('styles') ? () => {} : callback(),
+  });
+  assert.ok(registrations.has('sidebar.right.pane.tab'));
+  const title = registrations.get('sidebar.right.pane.tab.title');
+  assert.equal(title.meta.key, 'dsh-openspec-dashboard');
+  const rendered = title.component();
+  assert.equal(rendered.children[1].children[0], 'OpenSpec 看板');
+  const svg = rendered.children[0].type();
+  assert.equal(svg.type, 'svg');
+  assert.deepEqual([svg.props.width, svg.props.height], [16, 16]);
+  assert.equal(svg.props.stroke, 'currentColor');
+  assert.equal(svg.props['aria-hidden'], true);
+  assert.equal(svg.props.focusable, 'false');
+  const asset = readFileSync(new URL('../icon.svg', import.meta.url), 'utf8');
+  assert.match(asset, /viewBox="0 0 24 24"/);
+  assert.match(asset, /fill="#174D85"/);
+  assert.match(asset, /stroke="#FFFFFF"/);
+  for (const path of svg.children) assert.ok(asset.includes(path.props.d));
+  assert.equal(registration.guide[0].title(), 'guide');
+  assert.equal(registration.guide[0].icon, rendered.children[0].type);
+  for (const size of [22, 26]) {
+    const guideIcon = registration.guide[0].icon({ size });
+    assert.deepEqual([guideIcon.props.width, guideIcon.props.height], [size, size]);
+    assert.equal(guideIcon.props['aria-hidden'], true);
+    assert.equal(guideIcon.props.stroke, 'currentColor');
+  }
+  assert.match(source, /\.osd-tab-title \{[^}]*max-width:100%;[^}]*overflow:hidden/);
+  assert.match(source, /\.osd-tab-icon \{[^}]*flex:none/);
+  assert.doesNotMatch(source, /\.osd-tab-icon \{[^}]*width:16px/);
+  assert.match(source, /\.osd-tab-title-label \{[^}]*text-overflow:ellipsis;[^}]*white-space:nowrap/);
+});
+
 test('Chinese views use localized names without a manual refresh control', () => {
   let translations;
   const plugin = definition.factory(() => React);
@@ -100,6 +141,258 @@ test('Chinese views use localized names without a manual refresh control', () =>
   assert.doesNotMatch(source, /onClick:\s*\(\)\s*=>\s*refresh\(\(n\)\s*=>\s*n\s*\+\s*1\)\s*\}\s*,\s*t\(['"]refresh['"]\)/);
 });
 
+test('top-level view, searches and change mode stay isolated per session and workspace', async () => {
+  const original = { useState: React.useState, useRef: React.useRef, useEffect: React.useEffect };
+  const slots = [];
+  let cursor = 0;
+  React.useState = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = initial;
+    return [slots[index], (next) => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
+  };
+  React.useRef = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = { current: initial };
+    return slots[index];
+  };
+  React.useEffect = (effect, deps) => {
+    const index = cursor++;
+    if (!slots[index] || deps.some((item, i) => item !== slots[index].deps[i])) {
+      slots[index]?.cleanup?.();
+      slots[index] = { deps, cleanup: effect() };
+    }
+  };
+  const remote = { workspaceFiles: {
+    async list() { return { ok: true, value: { truncated: false, entries: [] } }; },
+    async read() { return missing; },
+  } };
+  try {
+    let Dashboard;
+    definition.factory(() => React).apply({ remote,
+      locale: { bind: () => (key) => key, register: () => () => {} },
+      sidebarRightTabs: { register: () => () => {} },
+      slots: { inject: (_key, factory) => factory(), register: (_meta, component) => { Dashboard = component; } },
+      effect: (callback, label) => label.includes('styles') ? () => {} : callback(),
+    });
+    let sessionId = 'a'; let cwd = '/repo-a';
+    const render = () => { cursor = 0; return Dashboard({ sessionId,
+      useSessions: (select) => select({ byId: { [sessionId]: { cwd } } }),
+      useTabInfo: () => ({ tab: { actions: { openResource() {} } } }), t: (key) => key }); };
+    const controls = () => render().children[0];
+    const viewButton = (index) => controls().children[1].children[0][index];
+    const modeButton = (index) => controls().children[2].children[0].children[0][index];
+    const search = () => controls().children[3];
+    render(); await new Promise(setImmediate);
+    viewButton(0).props.onClick();
+    modeButton(1).props.onClick();
+    search().props.onChange({ target: { value: 'change-a' } });
+    viewButton(1).props.onClick();
+    assert.equal(search().props.value, '');
+    search().props.onChange({ target: { value: 'spec-a' } });
+    viewButton(0).props.onClick();
+    assert.equal(search().props.value, 'change-a');
+    assert.equal(modeButton(1).props['aria-pressed'], true);
+    viewButton(1).props.onClick();
+    assert.equal(search().props.value, 'spec-a');
+    sessionId = 'b'; cwd = '/repo-a';
+    render(); await new Promise(setImmediate);
+    assert.equal(viewButton(0).props['aria-pressed'], true);
+    assert.equal(search().props.value, '');
+    search().props.onChange({ target: { value: 'change-b' } });
+    sessionId = 'a'; cwd = '/repo-a';
+    render(); await new Promise(setImmediate);
+    assert.equal(viewButton(1).props['aria-pressed'], true);
+    assert.equal(search().props.value, 'spec-a');
+    sessionId = 'a'; cwd = '/repo-other';
+    render(); await new Promise(setImmediate);
+    assert.equal(viewButton(0).props['aria-pressed'], true);
+    assert.equal(search().props.value, '');
+  } finally {
+    for (const slot of slots) slot?.cleanup?.();
+    Object.assign(React, original);
+  }
+});
+
+test('row browsing choices survive internal switches and data refresh without task writes', async () => {
+  const originals = { useState: React.useState, useRef: React.useRef, useEffect: React.useEffect };
+  const slots = []; let cursor = 0;
+  React.useState = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = initial;
+    return [slots[index], (next) => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
+  };
+  React.useRef = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = { current: initial };
+    return slots[index];
+  };
+  React.useEffect = (effect, deps) => {
+    const index = cursor++;
+    if (!slots[index] || deps.some((item, i) => item !== slots[index].deps[i])) {
+      slots[index]?.cleanup?.(); slots[index] = { deps, cleanup: effect() };
+    }
+  };
+  const listings = {
+    '/repo/openspec/changes': [{ name: 'demo', type: 'directory' }, { name: 'beta', type: 'directory' }],
+    '/repo/openspec/changes/demo': [{ name: 'tasks.md', type: 'file' }],
+    '/repo/openspec/changes/beta': [{ name: 'tasks.md', type: 'file' }],
+    '/repo/openspec/specs': [{ name: 'topic', type: 'directory' }],
+    '/repo/openspec/specs/topic': [{ name: 'spec.md', type: 'file' }, { name: 'notes.md', type: 'file' }],
+  };
+  const files = {
+    '/repo/openspec/changes/demo/tasks.md': '## Build\n- [ ] First',
+    '/repo/openspec/changes/beta/tasks.md': '## Other\n- [ ] Second',
+    '/repo/openspec/specs/topic/spec.md': '# Topic',
+    '/repo/openspec/specs/topic/notes.md': '# Notes',
+  };
+  let Dashboard;
+  try {
+    const plugin = definition.factory(() => React);
+    plugin.apply({ remote: fakeRemote(listings, files),
+      locale: { bind: () => (key) => key, register: () => () => {} },
+      sidebarRightTabs: { register: () => () => {} },
+      slots: { inject: (_key, factory) => factory(), register: (_meta, component) => { Dashboard = component; } },
+      effect: (callback, label) => label.includes('styles') ? () => {} : callback(),
+    });
+    const render = () => { cursor = 0; return Dashboard({ sessionId: 'session',
+      useSessions: (select) => select({ byId: { session: { cwd: '/repo' } } }),
+      useTabInfo: () => ({ tab: { actions: { openResource() {} } } }), t: (key) => key }); };
+    const visit = (node, predicate, result = []) => {
+      if (Array.isArray(node)) { node.forEach((part) => visit(part, predicate, result)); return result; }
+      if (!node || typeof node !== 'object') return result;
+      if (predicate(node)) result.push(node);
+      (node.children || []).forEach((part) => visit(part, predicate, result)); return result;
+    };
+    const button = (index) => render().children[0].children[1].children[0][index];
+    const mode = (index) => render().children[0].children[2].children[0].children[0][index];
+    const search = () => render().children[0].children[3];
+    const change = (slug) => visit(render(), (node) => node.type === plugin.model.ChangeRow && node.props.change.slug === slug)[0];
+    const spec = () => visit(render(), (node) => node.type === plugin.model.SpecRow)[0];
+    const rowView = (row) => {
+      const beforeState = React.useState, beforeRef = React.useRef;
+      React.useState = (initial) => [initial, () => {}]; React.useRef = (initial) => ({ current: initial });
+      try { return row.type(row.props); }
+      finally { React.useState = beforeState; React.useRef = beforeRef; }
+    };
+    let writes = 0;
+    sandbox.fetch = () => { writes++; throw Error('Browsing must not write a task'); };
+    render(); await new Promise(setImmediate);
+    let row = change('demo');
+    visit(rowView(row), (node) => node.props.className === 'osd-row')[0].props.onClick();
+    row = change('demo');
+    visit(rowView(row), (node) => node.type === 'button' && node.children[0] === 'tasks')[0].props.onClick();
+    row = change('demo');
+    visit(rowView(row), (node) => node.props.className === 'osd-incomplete-filter')[0].children[0]
+      .props.onChange({ currentTarget: { checked: true } });
+    row = change('demo');
+    visit(rowView(row), (node) => node.props.className === 'osd-group-button')[0].props.onClick();
+    assert.equal(change('beta').props.browse.incompleteOnly, false);
+    button(1).props.onClick();
+    visit(rowView(spec()), (node) => node.props.className === 'osd-row')[0].props.onClick();
+    button(0).props.onClick();
+    row = change('demo');
+    assert.deepEqual(JSON.parse(JSON.stringify(row.props.browse)), {
+      expanded: true, subview: 'tasks', incompleteOnly: true,
+    });
+    assert.equal(row.props.collapsed['/repo/openspec/changes/demo:1'], true);
+    mode(1).props.onClick(); assert.equal(change('demo'), undefined);
+    mode(0).props.onClick(); assert.equal(change('demo').props.browse.expanded, true);
+    search().props.onChange({ target: { value: 'no-match' } });
+    assert.equal(change('demo'), undefined);
+    search().props.onChange({ target: { value: '' } });
+    assert.equal(change('demo').props.browse.incompleteOnly, true);
+    button(1).props.onClick(); assert.equal(spec().props.expanded, true);
+    button(0).props.onClick();
+    const refresh = async () => { slots[0]++; render(); await new Promise(setImmediate); };
+    await refresh();
+    assert.equal(change('demo').props.browse.expanded, true);
+    assert.equal(change('demo').props.collapsed['/repo/openspec/changes/demo:1'], true);
+    listings['/repo/openspec/changes'] = [{ name: 'beta', type: 'directory' }];
+    await refresh();
+    assert.equal(change('demo'), undefined);
+    listings['/repo/openspec/changes'] = [{ name: 'demo', type: 'directory' }, { name: 'beta', type: 'directory' }];
+    await refresh();
+    assert.equal(change('demo').props.browse.expanded, false);
+    assert.equal(change('demo').props.collapsed['/repo/openspec/changes/demo:1'], false);
+    assert.equal(writes, 0);
+  } finally {
+    for (const slot of slots) slot?.cleanup?.();
+    Object.assign(React, originals); delete sandbox.fetch;
+  }
+});
+
+test('scroll offsets restore per view, mode and session and clamp after refresh', async () => {
+  const originals = { useState: React.useState, useRef: React.useRef,
+    useEffect: React.useEffect, useLayoutEffect: React.useLayoutEffect };
+  const slots = []; let cursor = 0;
+  React.useState = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = initial;
+    return [slots[index], (next) => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
+  };
+  React.useRef = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = { current: initial };
+    return slots[index];
+  };
+  const effect = (fn, deps) => {
+    const index = cursor++;
+    if (!slots[index] || deps.some((item, i) => item !== slots[index].deps[i])) {
+      slots[index]?.cleanup?.(); slots[index] = { deps, pending: fn };
+    }
+    return index;
+  };
+  React.useEffect = (fn, deps) => { const index = effect(fn, deps);
+    if (slots[index].pending) slots[index].cleanup = slots[index].pending(), slots[index].pending = null; };
+  React.useLayoutEffect = effect;
+  try {
+    let Dashboard;
+    definition.factory(() => React).apply({ remote: { workspaceFiles: {
+      async list() { return { ok: true, value: { entries: [], truncated: false } }; },
+      async read() { return missing; },
+    } }, locale: { bind: () => (key) => key, register: () => () => {} },
+    sidebarRightTabs: { register: () => () => {} },
+    slots: { inject: (_key, factory) => factory(), register: (_meta, component) => { Dashboard = component; } },
+    effect: (callback, label) => label.includes('styles') ? () => {} : callback(),
+    });
+    let sessionId = 'a'; let cwd = '/repo';
+    const root = { scrollTop: 0, scrollHeight: 1000, clientHeight: 100 };
+    const render = () => {
+      cursor = 0;
+      const tree = Dashboard({ sessionId,
+        useSessions: (select) => select({ byId: { [sessionId]: { cwd } } }),
+        useTabInfo: () => ({ tab: { actions: { openResource() {} } } }), t: (key) => key });
+      tree.props.ref(root);
+      for (const slot of slots) if (slot?.pending) { slot.cleanup = slot.pending(); slot.pending = null; }
+      return tree;
+    };
+    const scroll = (offset) => { root.scrollTop = offset; render().props.onScroll(); };
+    const view = (index) => render().children[0].children[1].children[0][index].props.onClick();
+    const mode = (index) => render().children[0].children[2].children[0].children[0][index].props.onClick();
+    render(); await new Promise(setImmediate); render();
+    scroll(360); view(1); render(); assert.equal(root.scrollTop, 0);
+    scroll(220); view(0); render(); assert.equal(root.scrollTop, 360);
+    mode(1); render(); assert.equal(root.scrollTop, 0);
+    scroll(140); mode(2); render(); assert.equal(root.scrollTop, 0);
+    mode(1); render(); assert.equal(root.scrollTop, 140);
+    mode(0); render(); assert.equal(root.scrollTop, 360);
+    view(1); render(); assert.equal(root.scrollTop, 220);
+    root.scrollHeight = 200; slots[0]++; render(); await new Promise(setImmediate);
+    render(); assert.equal(root.scrollTop, 100);
+    sessionId = 'b'; render(); await new Promise(setImmediate);
+    render(); assert.equal(root.scrollTop, 0);
+    scroll(55);
+    sessionId = 'a'; render(); await new Promise(setImmediate);
+    render(); assert.equal(root.scrollTop, 100);
+    view(0); render(); assert.equal(root.scrollTop, 100);
+    cwd = '/other'; render(); await new Promise(setImmediate);
+    render(); assert.equal(root.scrollTop, 0);
+  } finally {
+    for (const slot of slots) slot?.cleanup?.();
+    Object.assign(React, originals);
+  }
+});
+
 test('both views preserve toolbar and search positions without passive notices', () => {
   const render = (view, mode = 'active', t = (key) => key, variant = 'full', search = '') => {
     let Dashboard;
@@ -125,8 +418,11 @@ test('both views preserve toolbar and search positions without passive notices',
               { name: 'confirmed', files: [{ relative: 'spec.md', path: '/repo/spec.md' }], changes: [] },
             ], warnings: ['transient'], limited: true },
               sessionId: 'session', cwd: '/repo', refreshError: 'transient' } : initial, () => {}],
-      useRef: (initial) => ({ current: initial }),
+      useRef: (initial) => ({ current: initial && typeof initial.set === 'function' ? new Map([
+        [JSON.stringify(['session', '/repo']), { view, mode, queries: { changes: search, specs: search }, changes: {}, specs: {}, folds: {} }],
+      ]) : initial }),
       useEffect: () => {},
+      useLayoutEffect: () => {},
     };
     const plugin = definition.factory(() => mockReact);
     plugin.apply({
@@ -881,8 +1177,9 @@ test('dashboard checkbox sends guarded request, updates count, and reports auth 
       slots: { inject: (_key, factory) => factory(), register: (_meta, component) => { Dashboard = component; } },
       effect: (callback, label) => label.includes('styles') ? () => {} : callback(),
     });
-    const render = () => { cursor = 0; return Dashboard({ sessionId: 'session',
-      useSessions: (select) => select({ byId: { session: { cwd: '/repo' } } }),
+    let activeSessionId = 'session';
+    const render = () => { cursor = 0; return Dashboard({ sessionId: activeSessionId,
+      useSessions: (select) => select({ byId: { [activeSessionId]: { cwd: '/repo' } } }),
       useTabInfo: () => ({ tab: { actions: { openResource() {} } } }), t: (key) => key }); };
     const findNode = (node, predicate) => {
       if (Array.isArray(node)) for (const child of node) { const match = findNode(child, predicate); if (match) return match; }
@@ -926,6 +1223,19 @@ test('dashboard checkbox sends guarded request, updates count, and reports auth 
     assert.deepEqual(JSON.parse(JSON.stringify(row.props.taskFeedback)), {
       lineNumber: 2, message: 'taskWriteError (HTTP 400 · invalid-task)',
     });
+    let finishWrite;
+    sandbox.fetch = () => new Promise((resolve) => { finishWrite = resolve; });
+    const staleWrite = row.props.toggleTask(row.props.change, row.props.change.tasks[0]);
+    assert.ok(findNode(render(), (node) => node.type === rowType).props.pendingTask);
+    activeSessionId = 'other'; render();
+    activeSessionId = 'session';
+    row = findNode(render(), (node) => node.type === rowType);
+    assert.equal(row.props.pendingTask, undefined);
+    assert.equal(row.props.taskFeedback, undefined);
+    finishWrite(new Response('unauthorized', { status: 401 }));
+    await staleWrite;
+    row = findNode(render(), (node) => node.type === rowType);
+    assert.equal(row.props.taskFeedback, undefined);
   } finally {
     Object.assign(React, originals);
     delete sandbox.fetch;

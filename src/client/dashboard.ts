@@ -2,7 +2,33 @@ import { applyTaskResult, changeStatus, fileAddressFor, loadBoard, specStatus, t
 import { watchBoard } from './watch';
 import type { Translate } from './translations';
 import type { ReactAPI } from './types';
-import { createRows } from './rows';
+import { createRows, type ChangeBrowse } from './rows';
+type View = 'changes' | 'specs';
+type ChangeMode = 'active' | 'archive' | 'all';
+interface BrowseState {
+  view: View; mode: ChangeMode; queries: Record<View, string>;
+  changes: Record<string, ChangeBrowse>; specs: Record<string, boolean>; folds: Record<string, boolean>;
+  scrolls: Record<string, number>;
+}
+const initialBrowse = (): BrowseState => ({ view: 'changes', mode: 'active',
+  queries: { changes: '', specs: '' }, changes: {}, specs: {}, folds: {}, scrolls: {} });
+const initialChange = (): ChangeBrowse => ({ expanded: false, subview: 'files', incompleteOnly: false });
+function reconcileBrowse(current: BrowseState, board: Board): BrowseState {
+  const changes: Record<string, ChangeBrowse> = {};
+  const specs: Record<string, boolean> = {};
+  const folds: Record<string, boolean> = {};
+  for (const change of board.changes) {
+    if (current.changes[change.directory]) changes[change.directory] = current.changes[change.directory];
+    for (const group of change.groups) {
+      const key = change.directory + ':' + group.id;
+      folds[key] = current.folds[key] ?? group.items.every((task) => task.done);
+    }
+  }
+  for (const spec of board.specs) {
+    if (Object.prototype.hasOwnProperty.call(current.specs, spec.name)) specs[spec.name] = current.specs[spec.name];
+  }
+  return { ...current, changes, specs, folds };
+}
 export function createDashboard(React: ReactAPI, remote: Remote) {
 const h = React.createElement;
 const { ChangeRow, SpecRow } = createRows(React);
@@ -10,15 +36,41 @@ function Dashboard({ sessionId, useSessions, useTabInfo, t }: { sessionId: strin
   const cwd = useSessions((sessions) => sessions.byId[sessionId]?.cwd);
   const { tab } = useTabInfo();
   const [revision, invalidate] = React.useState(0);
-  const [view, setView] = React.useState('changes');
-  const [mode, setMode] = React.useState('active');
-  const [query, setQuery] = React.useState('');
   const [state, setState] = React.useState<{ loading?: boolean; noWorkspace?: boolean; sessionId?: string; cwd?: string; board?: Board; error?: string }>({ loading: true });
-  const [openError, setOpenError] = React.useState(false);
+  const [openError, setOpenError] = React.useState<{ sessionId: string; cwd: string | undefined; generation: number } | null>(null);
   const [taskFeedback, setTaskFeedback] = React.useState<Record<string, { lineNumber: number; message: string } | null>>({});
-  const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>({});
   const [pendingTasks, setPendingTasks] = React.useState<Record<string, { lineNumber: number; done: boolean } | null>>({});
   const [watchState, setWatchState] = React.useState<{ sessionId: string; cwd: string; failed: boolean } | null>(null);
+  const [, refreshBrowse] = React.useState(0);
+  const browseBySession = React.useRef(new Map<string, BrowseState>());
+  const browseKey = JSON.stringify([sessionId, cwd || '']);
+  const activeSession = React.useRef(browseKey);
+  const transientGeneration = React.useRef(0);
+  if (activeSession.current !== browseKey) {
+    activeSession.current = browseKey;
+    transientGeneration.current++;
+  }
+  React.useEffect(() => {
+    setPendingTasks({});
+    setTaskFeedback({});
+  }, [browseKey]);
+  if (!browseBySession.current.has(browseKey)) browseBySession.current.set(browseKey, initialBrowse());
+  const browse = browseBySession.current.get(browseKey)!;
+  const view = browse.view;
+  const mode = browse.mode;
+  const query = browse.queries[view];
+  const scrollKey = view === 'specs' ? 'specs' : 'changes:' + mode;
+  const scrollRoot = React.useRef<HTMLElement | null>(null);
+  function rememberScroll() {
+    if (!scrollRoot.current) return;
+    const current = browseBySession.current.get(browseKey)!;
+    browseBySession.current.set(browseKey, { ...current,
+      scrolls: { ...current.scrolls, [scrollKey]: scrollRoot.current.scrollTop } });
+  }
+  function updateBrowse(change: (current: BrowseState) => BrowseState) {
+    browseBySession.current.set(browseKey, change(browseBySession.current.get(browseKey)!));
+    refreshBrowse((n) => n + 1);
+  }
   const pendingRef = React.useRef(new Set<string>());
   const taskAbort = React.useRef(new AbortController());
   React.useEffect(() => () => taskAbort.current.abort(), []);
@@ -28,7 +80,10 @@ function Dashboard({ sessionId, useSessions, useTabInfo, t }: { sessionId: strin
     setState((current) => current.board && current.sessionId === sessionId && current.cwd === cwd
       ? current : { loading: true, sessionId, cwd });
     loadBoard(remote, sessionId, cwd, controller.signal).then((board) => {
-      if (!controller.signal.aborted) setState({ board, sessionId, cwd });
+      if (!controller.signal.aborted) {
+        browseBySession.current.set(browseKey, reconcileBrowse(browseBySession.current.get(browseKey)!, board));
+        setState({ board, sessionId, cwd });
+      }
     }, (error) => {
       if (!controller.signal.aborted) setState((current) =>
         current.board && current.sessionId === sessionId && current.cwd === cwd
@@ -44,18 +99,26 @@ function Dashboard({ sessionId, useSessions, useTabInfo, t }: { sessionId: strin
       setWatchState({ sessionId, cwd, failed: !!key }));
   }, [sessionId, cwd]);
   function openFile(path: string) {
-    try { tab.actions.openResource(fileAddressFor(sessionId, cwd || '', path)); setOpenError(false); }
-    catch { setOpenError(true); }
+    try { tab.actions.openResource(fileAddressFor(sessionId, cwd || '', path)); setOpenError(null); }
+    catch { setOpenError({ sessionId, cwd, generation: transientGeneration.current }); }
   }
   function toggleGroup(key: string, folded: boolean) {
-    setCollapsed((current) => ({ ...current, [key]: !(current[key] ?? folded) }));
+    updateBrowse((current) => ({ ...current, folds: { ...current.folds, [key]: !folded } }));
   }
+  function setChangeBrowse(directory: string, patch: Partial<ChangeBrowse>) {
+    updateBrowse((current) => ({ ...current, changes: { ...current.changes,
+      [directory]: { ...initialChange(), ...current.changes[directory], ...patch } } }));
+  }
+  const taskKey = (directory: string) => JSON.stringify([browseKey, transientGeneration.current, directory]);
   async function toggleTask(change: Change, task: Task) {
-    if (change.archived || !change.tasksVersion || pendingRef.current.has(change.directory)) return;
-    pendingRef.current.add(change.directory);
-    setPendingTasks((current) => ({ ...current, [change.directory]: {
+    const generation = transientGeneration.current;
+    const key = taskKey(change.directory);
+    const lockKey = JSON.stringify([sessionId, cwd, change.directory]);
+    if (activeSession.current !== browseKey || change.archived || !change.tasksVersion || pendingRef.current.has(lockKey)) return;
+    pendingRef.current.add(lockKey);
+    setPendingTasks((current) => ({ ...current, [key]: {
       lineNumber: task.lineNumber, done: !task.done } }));
-    setTaskFeedback((current) => ({ ...current, [change.directory]: null }));
+    setTaskFeedback((current) => ({ ...current, [key]: null }));
     let stage = 'request';
     try {
       const response = await fetch('/api/openspec-dashboard/task', {
@@ -68,10 +131,10 @@ function Dashboard({ sessionId, useSessions, useTabInfo, t }: { sessionId: strin
       const payload: unknown = await response.json().catch(() => null);
       const result = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
       if (!response.ok) {
-        if (!taskAbort.current.signal.aborted) {
-          const key = taskErrorKey(response.status, result?.error);
-          setTaskFeedback((current) => ({ ...current, [change.directory]: {
-            lineNumber: task.lineNumber, message: t(key) + ' (' + taskDiagnostic(response.status, result) + ')',
+        if (!taskAbort.current.signal.aborted && transientGeneration.current === generation) {
+          const errorKey = taskErrorKey(response.status, result?.error);
+          setTaskFeedback((current) => ({ ...current, [key]: {
+            lineNumber: task.lineNumber, message: t(errorKey) + ' (' + taskDiagnostic(response.status, result) + ')',
           } }));
         }
         return;
@@ -83,17 +146,18 @@ function Dashboard({ sessionId, useSessions, useTabInfo, t }: { sessionId: strin
       }
       const writeResult = { lineNumber: task.lineNumber, done: !task.done,
         version: result.version, line: result.line };
-      if (!taskAbort.current.signal.aborted) setState((current) =>
+      if (!taskAbort.current.signal.aborted && transientGeneration.current === generation) setState((current) =>
         current.board && current.sessionId === sessionId && current.cwd === cwd ? { ...current,
           board: { ...current.board, changes: current.board.changes.map((item) =>
             item.directory === change.directory ? applyTaskResult(item, writeResult) : item) } } : current);
     } catch (error) {
-      if (!taskAbort.current.signal.aborted) setTaskFeedback((current) => ({ ...current,
-        [change.directory]: { lineNumber: task.lineNumber,
+      if (!taskAbort.current.signal.aborted && transientGeneration.current === generation) setTaskFeedback((current) => ({ ...current,
+        [key]: { lineNumber: task.lineNumber,
           message: t('taskWriteError') + ' (' + (stage === 'request' ? 'network-error' : 'invalid-response') + ')' } }));
     } finally {
-      pendingRef.current.delete(change.directory);
-      if (!taskAbort.current.signal.aborted) setPendingTasks((current) => ({ ...current, [change.directory]: null }));
+      pendingRef.current.delete(lockKey);
+      if (!taskAbort.current.signal.aborted && transientGeneration.current === generation)
+        setPendingTasks((current) => ({ ...current, [key]: null }));
     }
   }
   const currentState = !cwd ? { noWorkspace: true } :
@@ -111,36 +175,54 @@ function Dashboard({ sessionId, useSessions, useTabInfo, t }: { sessionId: strin
   const countText = Object.entries(counts).filter(([, count]) => count > 0)
     .map(([key, count]) => count + t('countUnit') + t(key)).join(' / ');
   const showControls = Boolean(board && !board.missing && !currentState.loading && !currentState.noWorkspace && !currentState.error);
+  React.useLayoutEffect(() => {
+    const root = scrollRoot.current;
+    if (!root || !showControls) return;
+    const saved = browseBySession.current.get(browseKey)?.scrolls?.[scrollKey] ?? 0;
+    root.scrollTop = Math.max(0, Math.min(saved, root.scrollHeight - root.clientHeight));
+  }, [browseKey, scrollKey, board, query, showControls]);
   const watchFailed = !!cwd && watchState?.sessionId === sessionId && watchState.cwd === cwd && watchState.failed;
-  return h('div', { className: 'osd', 'data-openspec-dashboard': true },
+  return h('div', { className: 'osd', 'data-openspec-dashboard': true,
+    ref: (node: HTMLElement | null) => { scrollRoot.current = node; }, onScroll: rememberScroll },
     h('div', { className: 'osd-controls' },
       h('header', { className: 'osd-head', 'data-watch-failed': watchFailed },
         h('h1', null, t('title')),
         watchFailed && h('span', { className: 'osd-watch-failed', role: 'status',
           'aria-label': t('watchFailed'), title: t('watchFailed') }, t('watchFailed'))),
-      h('nav', { className: 'osd-view', 'aria-label': t('title') }, ['changes', 'specs'].map((name) =>
+      h('nav', { className: 'osd-view', 'aria-label': t('title') }, (['changes', 'specs'] as const).map((name) =>
         h('button', { key: name, type: 'button', className: 'osd-control', 'aria-pressed': view === name,
-          onClick: () => { setView(name); setQuery(''); } }, t(name === 'changes' ? 'changesView' : 'specsView')))),
+          onClick: () => { rememberScroll(); updateBrowse((current) => ({ ...current, view: name })); } },
+          t(name === 'changes' ? 'changesView' : 'specsView')))),
       showControls && h('div', { className: 'osd-toolbar' },
         h('div', { className: 'osd-filter' }, view === 'changes'
-          ? ['active', 'archive', 'all'].map((name) =>
+          ? (['active', 'archive', 'all'] as const).map((name) =>
             h('button', { key: name, className: 'osd-control', type: 'button', 'aria-pressed': mode === name,
-              onClick: () => setMode(name) }, t(name)))
+              onClick: () => { rememberScroll(); updateBrowse((current) => ({ ...current, mode: name })); } }, t(name)))
           : h('span', { className: 'osd-filter-label' }, t('all'))),
         countText ? h('span', { className: 'osd-count osd-muted' }, countText) : null),
       showControls && h('input', { type: 'search', className: 'osd-search', placeholder: t('search'),
-        'aria-label': t('search'), value: query, onChange: (event: { target: { value: string } }) => setQuery(event.target.value) })),
+        'aria-label': t('search'), value: query, onChange: (event: { target: { value: string } }) =>
+          updateBrowse((current) => ({ ...current,
+            queries: { ...current.queries, [current.view]: event.target.value } })) })),
     currentState.loading ? h('p', { className: 'osd-state', role: 'status' }, t('loading')) :
     currentState.noWorkspace ? h('p', { className: 'osd-state' }, t('noWorkspace')) :
     currentState.error ? h('p', { className: 'osd-state', role: 'alert' }, t('readError')) :
     board?.missing ? h('p', { className: 'osd-state' }, t('noOpenSpec')) :
     h(React.Fragment, null,
-      openError && h('p', { className: 'osd-notice', role: 'alert' }, t('openError')),
+      openError?.sessionId === sessionId && openError.cwd === cwd &&
+        openError.generation === transientGeneration.current &&
+        h('p', { className: 'osd-notice', role: 'alert' }, t('openError')),
       view === 'changes' ? (changes.length ? changes.map((change) =>
-        h(ChangeRow, { key: change.directory, change, openFile, t, collapsed, toggleGroup,
-          pendingTask: pendingTasks[change.directory], taskFeedback: taskFeedback[change.directory], toggleTask })) :
+        h(ChangeRow, { key: change.directory, change, openFile, t, collapsed: browse.folds, toggleGroup,
+          browse: browse.changes[change.directory] ?? initialChange(),
+          setBrowse: (patch: Partial<ChangeBrowse>) => setChangeBrowse(change.directory, patch),
+          pendingTask: pendingTasks[taskKey(change.directory)],
+          taskFeedback: taskFeedback[taskKey(change.directory)], toggleTask })) :
         h('p', { className: 'osd-state' }, query ? t('noMatches') : mode === 'archive' ? t('emptyArchive') : t('emptyChanges'))) :
-        (specs.length ? specs.map((spec) => h(SpecRow, { key: spec.name, spec, openFile, t })) :
+        (specs.length ? specs.map((spec) => h(SpecRow, { key: spec.name, spec, openFile, t,
+          expanded: browse.specs[spec.name] ?? false,
+          onExpand: (value: boolean) => updateBrowse((current) => ({ ...current,
+            specs: { ...current.specs, [spec.name]: value } })) })) :
           h('p', { className: 'osd-state' }, query ? t('noMatches') : t('emptySpecs')))));
 }
 return { Dashboard, ChangeRow, SpecRow };

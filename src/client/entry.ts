@@ -8,7 +8,7 @@ import type { ReactAPI } from './types';
 interface ClientContext {
   remote: Remote;
   locale: { bind(namespace: string): (key: string) => string; register(namespace: string, messages: typeof copy): () => void };
-  sidebarRightTabs: { register(tab: { id: string; kind: string; keepMounted: boolean; title: () => string; guide: { id: string; order: number; title: () => string; description: () => string }[] }): () => void };
+  sidebarRightTabs: { register(tab: { id: string; kind: string; keepMounted: boolean; title: () => string; guide: { id: string; order: number; title: () => string; description: () => string; icon: () => unknown }[] }): () => void };
   slots: { inject(name: string, callback: () => unknown): () => void; register(meta: { name: string; key: string; locale: string }, component: unknown): unknown };
   effect(callback: () => void | (() => void), label: string): void;
 }
@@ -21,6 +21,15 @@ window.__ModuleLoader__.load({
     const React = require('react') as ReactAPI;
     // The dashboard receives the runtime React instance; it never bundles another copy.
     let remote: Remote;
+    const h = React.createElement;
+    function BoardIcon({ size = 16, className }: { size?: number; className?: string } = {}) {
+      return h('svg', { className: ['osd-tab-icon', className].filter(Boolean).join(' '),
+        viewBox: '0 0 24 24', width: size, height: size,
+        fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round',
+        strokeLinejoin: 'round', 'aria-hidden': true, focusable: 'false' },
+        h('path', { d: 'M6 3h8l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z' }),
+        h('path', { d: 'M14 3v4h4M8 10.5h4M8 15l2.5 2.5 5-5' }));
+    }
     const { Dashboard, ChangeRow, SpecRow } = createDashboard(React, {
       workspaceFiles: {
         list: (...args) => remote.workspaceFiles.list(...args),
@@ -35,8 +44,16 @@ window.__ModuleLoader__.load({
         ctx.effect(() => ctx.locale.register(NS, copy), 'openspec-dashboard: translations');
         ctx.effect(() => ctx.sidebarRightTabs.register({
           id: ID, kind: 'openspec-dashboard', keepMounted: true, title: () => t('title'),
-          guide: [{ id: 'board', order: 35, title: () => t('guide'), description: () => t('description') }],
+          guide: [{ id: 'board', order: 35, title: () => t('guide'), description: () => t('description'),
+             icon: BoardIcon }],
         }), 'openspec-dashboard: tab type');
+        function TabTitle() {
+          return h('span', { className: 'osd-tab-title' },
+            h(BoardIcon, null), h('span', { className: 'osd-tab-title-label' }, t('title')));
+        }
+        ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab.title', () =>
+          ctx.slots.register({ name: 'sidebar.right.pane.tab.title', key: ID, locale: NS }, TabTitle)),
+        'openspec-dashboard: tab title');
         ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () =>
           ctx.slots.register({ name: 'sidebar.right.pane.tab', key: ID, locale: NS }, Dashboard)),
         'openspec-dashboard: tab body');

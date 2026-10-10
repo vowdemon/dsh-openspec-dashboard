@@ -1,6 +1,7 @@
 import { changeStatus, fileKind, specStatus, type BoardFile, type Change, type Spec, type Task } from './model';
 import type { Translate } from './translations';
 import type { ReactAPI } from './types';
+export interface ChangeBrowse { expanded: boolean; subview: 'files' | 'tasks'; incompleteOnly: boolean }
 export function createRows(React: ReactAPI) {
 const h = React.createElement;
 function Tag({ kind, label }: { kind: string; label: string }) {
@@ -16,10 +17,16 @@ function FileList({ files, openFile, t, isCurrentSpec = false }: { files: BoardF
     }, h(Tag, { kind, label: t(kind) }), h('span', null, file.relative));
   })) : h('div', { className: 'osd-state' }, t('noFiles'));
 }
-function ChangeRow({ change, openFile, t, collapsed = {}, toggleGroup, pendingTask, taskFeedback, toggleTask }: { change: Change; openFile: (path: string) => void; t: Translate; collapsed?: Record<string, boolean>; toggleGroup: (key: string, folded: boolean) => void; pendingTask?: { lineNumber: number; done: boolean } | null; taskFeedback?: { lineNumber: number; message: string } | null; toggleTask: (change: Change, task: Task) => void }) {
-  const [expanded, setExpanded] = React.useState(false);
-  const [subview, setSubview] = React.useState('files');
-  const [incompleteOnly, setIncompleteOnly] = React.useState(false);
+function ChangeRow({ change, openFile, t, collapsed = {}, toggleGroup, pendingTask, taskFeedback, toggleTask, browse, setBrowse }: { change: Change; openFile: (path: string) => void; t: Translate; collapsed?: Record<string, boolean>; toggleGroup: (key: string, folded: boolean) => void; pendingTask?: { lineNumber: number; done: boolean } | null; taskFeedback?: { lineNumber: number; message: string } | null; toggleTask: (change: Change, task: Task) => void; browse?: ChangeBrowse; setBrowse?: (patch: Partial<ChangeBrowse>) => void }) {
+  const [localExpanded, setLocalExpanded] = React.useState(false);
+  const [localSubview, setLocalSubview] = React.useState<'files' | 'tasks'>('files');
+  const [localIncompleteOnly, setLocalIncompleteOnly] = React.useState(false);
+  const expanded = browse?.expanded ?? localExpanded;
+  const subview = browse?.subview ?? localSubview;
+  const incompleteOnly = browse?.incompleteOnly ?? localIncompleteOnly;
+  const setExpanded = (value: boolean) => browse ? setBrowse?.({ expanded: value }) : setLocalExpanded(value);
+  const setSubview = (value: 'files' | 'tasks') => browse ? setBrowse?.({ subview: value }) : setLocalSubview(value);
+  const setIncompleteOnly = (value: boolean) => browse ? setBrowse?.({ incompleteOnly: value }) : setLocalIncompleteOnly(value);
   const initialFolds = React.useRef(new Map<string, boolean>());
   const status = changeStatus(change);
   const displayDone = (task: Task) => pendingTask?.lineNumber === task.lineNumber ? pendingTask.done : task.done;
@@ -40,7 +47,7 @@ function ChangeRow({ change, openFile, t, collapsed = {}, toggleGroup, pendingTa
         }, h('span', { style: { width: (change.done / change.tasks.length * 100) + '%' } })))),
     expanded && h('div', { className: 'osd-children' },
       h('div', { className: 'osd-child-tabs' },
-        h('div', { className: 'osd-child-tab-buttons' }, ['files', 'tasks'].map((name) =>
+        h('div', { className: 'osd-child-tab-buttons' }, (['files', 'tasks'] as const).map((name) =>
           h('button', { key: name, className: 'osd-control', type: 'button', 'aria-pressed': subview === name,
             onClick: () => setSubview(name) }, t(name)))),
         subview === 'tasks' && h('label', { className: 'osd-incomplete-filter' },
@@ -81,8 +88,10 @@ function ChangeRow({ change, openFile, t, collapsed = {}, toggleGroup, pendingTa
             onClick: () => openFile(change.tasksPath!) }, t('openTasks'))) :
           h('div', { className: 'osd-state' }, t('noTasks'))));
 }
-function SpecRow({ spec, openFile, t }: { spec: Spec; openFile: (path: string) => void; t: Translate }) {
-  const [expanded, setExpanded] = React.useState(false);
+function SpecRow({ spec, openFile, t, expanded: savedExpanded, onExpand }: { spec: Spec; openFile: (path: string) => void; t: Translate; expanded?: boolean; onExpand?: (value: boolean) => void }) {
+  const [localExpanded, setLocalExpanded] = React.useState(false);
+  const expanded = savedExpanded ?? localExpanded;
+  const setExpanded = (value: boolean) => onExpand ? onExpand(value) : setLocalExpanded(value);
   const kind = specStatus(spec);
   const changed = kind !== 'confirmedSpec';
   const singleFile = !changed && spec.files.length === 1 ? spec.files[0] : undefined;
