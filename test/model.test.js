@@ -392,6 +392,41 @@ test('loads current specs alongside active deltas but excludes archived deltas',
   assert.deepEqual(Array.from(board.warnings), []);
 });
 
+test('task file pagination reads beyond 500 lines with stable line numbers', async () => {
+  const lines = ['## Long', ...Array.from({ length: 499 }, (_, index) => 'Background ' + index), '- [ ] Later', '- [x] Last'];
+  const offsets = [];
+  const remote = fakeRemote({ '/repo/openspec/changes': [{ name: 'long', type: 'directory' }],
+    '/repo/openspec/changes/long': [{ name: 'tasks.md', type: 'file' }] }, {});
+  remote.workspaceFiles.read = async (_id, path, range) => {
+    if (path.endsWith('/proposal.md')) return missing;
+    assert.equal(path, '/repo/openspec/changes/long/tasks.md');
+    offsets.push(range.offset);
+    const start = range.offset - 1;
+    return { ok: true, value: { text: lines.slice(start, start + range.limit).join('\n'),
+      eof: start + range.limit >= lines.length, version: 'stable' } };
+  };
+  const board = await loadBoard(remote, 'session', '/repo', new AbortController().signal);
+  assert.deepEqual(offsets, [1, 501]);
+  assert.deepEqual(Array.from(board.changes[0].tasks, ({ lineNumber }) => lineNumber), [501, 502]);
+  assert.equal(board.changes[0].tasksVersion, 'stable');
+  assert.equal(board.changes[0].tasksTruncated, false);
+  assert.equal(board.changes[0].done, 1);
+});
+
+test('task pagination fails closed on empty continuation and changing file version', async () => {
+  const remote = fakeRemote({ '/repo/openspec/changes': [{ name: 'long', type: 'directory' }],
+    '/repo/openspec/changes/long': [{ name: 'tasks.md', type: 'file' }] }, {});
+  let continuation = { text: '', eof: false, version: 'v1' };
+  remote.workspaceFiles.read = async (_id, path, range) => path.endsWith('/proposal.md') ? missing : { ok: true,
+    value: range.offset === 1 ? { text: '## Build\n- [ ] First', eof: false, version: 'v1' } : continuation };
+  const load = () => loadBoard(remote, 'session', '/repo', new AbortController().signal);
+  await assert.rejects(load(), /Empty page during read/);
+  continuation = { text: '- [ ] Second', eof: true, version: 'v2' };
+  await assert.rejects(load(), /File changed during read/);
+  continuation = { text: '- [ ] Second', eof: true, version: 'v1' };
+  assert.equal((await load()).changes[0].tasks.length, 2);
+});
+
 test('new spec summary prefers spec.md and falls through empty earlier changes', async () => {
   const listings = {
     '/repo/openspec/changes': [
@@ -446,16 +481,61 @@ test('long current spec summary does not report a broken project', async () => {
   assert.deepEqual(Array.from(board.warnings), []);
 });
 
-test('a crowded active list does not hide the archived list', async () => {
+test('all active and archived changes remain visible beyond former cap', async () => {
   const active = Array.from({ length: 81 }, (_, i) => ({ name: 'change-' + String(i).padStart(3, '0'), type: 'directory' }));
   const listings = {
     '/repo/openspec/changes': [...active, { name: 'archive', type: 'directory' }],
     '/repo/openspec/changes/archive': [{ name: '2026-01-01-done', type: 'directory' }],
   };
   const board = await loadBoard(fakeRemote(listings, {}), 'session', '/repo', new AbortController().signal);
-  assert.equal(board.limited, true);
-  assert.equal(board.changes.filter((change) => !change.archived).length, 80);
+  assert.equal(board.limited, false);
+  assert.equal(board.changes.filter((change) => !change.archived).length, 81);
   assert.equal(board.changes.filter((change) => change.archived).length, 1);
+});
+
+test('more than 120 Markdown files and 100 specs remain visible through deep directories', async () => {
+  const listings = {
+    '/repo/openspec/changes': [{ name: 'many', type: 'directory' }],
+    '/repo/openspec/changes/many': [
+      ...Array.from({ length: 121 }, (_, i) => ({ name: 'note-' + i + '.md', type: 'file' })),
+      { name: 'a', type: 'directory' },
+    ],
+    '/repo/openspec/specs': Array.from({ length: 101 }, (_, i) => ({ name: 'spec-' + i, type: 'directory' })),
+  };
+  let location = '/repo/openspec/changes/many';
+  for (const name of ['a', 'b', 'c', 'd']) {
+    listings[location + '/' + name] = name === 'd' ? [{ name: 'deep.md', type: 'file' }] :
+      [{ name: String.fromCharCode(name.charCodeAt(0) + 1), type: 'directory' }];
+    location += '/' + name;
+  }
+  for (let i = 0; i < 101; i++) listings['/repo/openspec/specs/spec-' + i] = [{ name: 'spec.md', type: 'file' }];
+  const board = await loadBoard(fakeRemote(listings, {}), 'session', '/repo', new AbortController().signal);
+  assert.equal(board.changes[0].files.length, 122);
+  assert.ok(board.changes[0].files.some((file) => file.relative === 'a/b/c/d/deep.md'));
+  assert.equal(board.specs.length, 101);
+  assert.equal(board.limited, false);
+});
+
+test('bounded concurrent change reads keep sorted results', async () => {
+  const entries = Array.from({ length: 14 }, (_, i) => ({ name: 'change-' + String(i).padStart(2, '0'), type: 'directory' }));
+  const listings = { '/repo/openspec/changes': entries };
+  for (const entry of entries) listings['/repo/openspec/changes/' + entry.name] = [];
+  const remote = fakeRemote(listings, {});
+  const base = remote.workspaceFiles.list;
+  let inFlight = 0;
+  let peak = 0;
+  remote.workspaceFiles.list = async (...args) => {
+    if (args[1].startsWith('/repo/openspec/changes/change-')) {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlight--;
+    }
+    return base(...args);
+  };
+  const board = await loadBoard(remote, 'session', '/repo', new AbortController().signal);
+  assert.equal(board.changes.length, entries.length);
+  assert.ok(peak > 1 && peak <= 4, 'expected finite concurrent reads, got ' + peak);
+  assert.deepEqual(Array.from(board.changes, (change) => change.slug), entries.map((entry) => entry.name));
 });
 
 test('single-file specs navigate directly; multiple files still expand for selection', () => {
@@ -938,6 +1018,143 @@ test('background invalidations retain the board; failures and workspace switches
   } finally { Object.assign(React, originals); }
 });
 
+test('watch failure state follows the current session instead of leaking between sessions', () => {
+  const original = { useState: React.useState, useRef: React.useRef, useEffect: React.useEffect };
+  const slots = [];
+  let cursor = 0;
+  React.useState = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = initial;
+    return [slots[index], (next) => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
+  };
+  React.useRef = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = { current: initial };
+    return slots[index];
+  };
+  React.useEffect = (effect, deps) => {
+    const index = cursor++;
+    if (!slots[index] || deps.some((value, i) => value !== slots[index].deps[i])) {
+      slots[index]?.cleanup?.();
+      slots[index] = { deps, cleanup: effect() };
+    }
+  };
+  const streams = [];
+  sandbox.EventSource = class {
+    constructor(url) { this.url = url; this.listeners = {}; streams.push(this); }
+    addEventListener(name, listener) { this.listeners[name] = listener; }
+    emit(name) { this.listeners[name]?.(); }
+    close() { this.closed = true; }
+  };
+  try {
+    let Dashboard;
+    const plugin = definition.factory(() => React);
+    plugin.apply({ remote: fakeRemote({}, {}), locale: { bind: () => (key) => key, register: () => () => {} },
+      sidebarRightTabs: { register: () => () => {} },
+      slots: { inject: (_key, factory) => factory(), register: (_meta, component) => { Dashboard = component; } },
+      effect: (callback, label) => label.includes('styles') ? () => {} : callback() });
+    let sessionId = 'first';
+    const render = () => { cursor = 0; return Dashboard({ sessionId,
+      useSessions: (select) => select({ byId: { first: { cwd: '/repo' }, second: { cwd: '/repo2' } } }),
+      useTabInfo: () => ({ tab: { actions: { openResource() {} } } }), t: (key) => key }); };
+    const header = () => render().children[0].children[0];
+    const failed = () => header().props['data-watch-failed'];
+    assert.equal(failed(), false);
+    streams[0].emit('ready'); streams[0].emit('unavailable');
+    assert.equal(failed(), true);
+    assert.equal(header().children[1].props.className, 'osd-watch-failed');
+    assert.equal(header().children[1].props.role, 'status');
+    assert.equal(header().children[1].props['aria-label'], 'watchFailed');
+    assert.equal(header().children[1].children[0], 'watchFailed');
+    sessionId = 'second';
+    assert.equal(failed(), false);
+    assert.equal(header().children[1], false);
+    assert.equal(streams[0].closed, true);
+    assert.match(streams[1].url, /sessionId=second$/);
+    streams[1].emit('ready');
+    assert.equal(failed(), false);
+    streams[1].onerror();
+    assert.equal(failed(), true);
+    streams[1].emit('ready');
+    assert.equal(failed(), false);
+    assert.equal(header().children[1], false);
+  } finally { Object.assign(React, original); delete sandbox.EventSource; }
+});
+
+test('dashboard integration renders large change lists while keeping watcher failure in the title', async () => {
+  const originals = { useState: React.useState, useRef: React.useRef, useEffect: React.useEffect };
+  const slots = [];
+  let cursor = 0;
+  React.useState = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = initial;
+    return [slots[index], (next) => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
+  };
+  React.useRef = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = { current: initial };
+    return slots[index];
+  };
+  React.useEffect = (effect, deps) => {
+    const index = cursor++;
+    if (!slots[index] || deps.some((value, i) => value !== slots[index].deps[i])) {
+      slots[index]?.cleanup?.();
+      slots[index] = { deps, cleanup: effect() };
+    }
+  };
+  const streams = [];
+  sandbox.EventSource = class {
+    constructor() { this.listeners = {}; streams.push(this); }
+    addEventListener(name, listener) { this.listeners[name] = listener; }
+    emit(name) { this.listeners[name]?.(); }
+    close() { this.closed = true; }
+  };
+  const entries = Array.from({ length: 81 }, (_, i) => ({ name: 'large-' + i, type: 'directory' }));
+  const listings = { '/repo/openspec/changes': entries };
+  for (const entry of entries) listings['/repo/openspec/changes/' + entry.name] = [];
+  try {
+    let Dashboard;
+    const plugin = definition.factory(() => React);
+    const rowType = plugin.model.ChangeRow;
+    plugin.apply({ remote: fakeRemote(listings, {}),
+      locale: { bind: () => (key) => key, register: () => () => {} },
+      sidebarRightTabs: { register: () => () => {} },
+      slots: { inject: (_key, factory) => factory(), register: (_meta, component) => { Dashboard = component; } },
+      effect: (callback, label) => label.includes('styles') ? () => {} : callback() });
+    const render = () => { cursor = 0; return Dashboard({ sessionId: 'session',
+      useSessions: (select) => select({ byId: { session: { cwd: '/repo' } } }),
+      useTabInfo: () => ({ tab: { actions: { openResource() {} } } }), t: (key) => key }); };
+    const nodes = (node) => node && typeof node === 'object'
+      ? Array.isArray(node) ? node.flatMap(nodes) : [node, ...node.children.flatMap(nodes)] : [];
+    render();
+    await new Promise(setImmediate);
+    let tree = render();
+    assert.equal(nodes(tree).filter((node) => node.type === rowType).length, 81);
+    const header = () => nodes(render()).find((node) => node.props.className === 'osd-head');
+    assert.equal(header().children[1], false);
+    streams[0].emit('unavailable');
+    tree = render();
+    assert.equal(nodes(tree).filter((node) => node.type === rowType).length, 81);
+    assert.equal(header().children[1].props['aria-label'], 'watchFailed');
+    streams[0].emit('ready'); // A closed unavailable stream cannot clear a newer failure.
+    assert.equal(header().children[1].props['aria-label'], 'watchFailed');
+    await new Promise((resolve) => setTimeout(resolve, 1020));
+    streams[1].emit('ready');
+    assert.equal(header().children[1], false);
+  } finally {
+    for (const slot of slots) slot?.cleanup?.();
+    Object.assign(React, originals); delete sandbox.EventSource;
+  }
+});
+
+test('compact accessible watcher notice remains inside a single title row', () => {
+  assert.match(source, /\.osd-head \{[^}]*flex-wrap:nowrap; white-space:nowrap;[^}]*\}/);
+  assert.match(source, /\.osd-head h1 \{[^}]*overflow:hidden; text-overflow:ellipsis; white-space:nowrap;[^}]*\}/);
+  assert.match(source, /\.osd-watch-failed \{[^}]*max-width:60%;[^}]*text-overflow:ellipsis; white-space:nowrap;[^}]*\}/);
+  assert.match(source, /watchFailed:"更新失效"/);
+  assert.match(source, /watchFailed:"Updates unavailable"/);
+});
+
 test('event subscriptions coalesce changes, reconnect safely, and isolate tabs', async () => {
   const streams = [];
   sandbox.EventSource = class {
@@ -973,15 +1190,30 @@ test('event subscriptions coalesce changes, reconnect safely, and isolate tabs',
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.deepEqual(a, ['updated', 'updated', 'updated']);
     assert.deepEqual(failures, ['', 'watchError', '', 'watchError', '']);
-    offA(); streams[2].emit('changed');
+    streams[2].emit('unavailable');
+    assert.equal(streams[2].closed, true);
+    assert.equal(failures.at(-1), 'watchError');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(streams.length, 4);
+    streams[3].emit('ready');
+    assert.equal(failures.at(-1), '');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    offA(); streams[3].emit('changed');
     streams[1].emit('changed');
     await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.deepEqual(a, ['updated', 'updated', 'updated']);
+    assert.deepEqual(a, ['updated', 'updated', 'updated', 'updated']);
     assert.deepEqual(b, ['updated']);
     assert.equal(streams[0].closed, true);
-    assert.equal(streams[2].closed, true);
+    assert.equal(streams[3].closed, true);
     offB(); assert.equal(streams[1].closed, true);
   } finally { delete sandbox.EventSource; }
+});
+
+test('missing EventSource reports a failed watcher instead of silently doing nothing', () => {
+  const errors = [];
+  const stop = watchBoard('no-stream', () => {}, (key) => errors.push(key));
+  assert.deepEqual(errors, ['watchError']);
+  stop();
 });
 
 test('summary extraction plus missing OpenSpec empty state', async () => {

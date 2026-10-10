@@ -3,7 +3,6 @@ import type { HostContext, SandboxMode } from './types.js';
 export interface TaskInput { sessionId: string; slug: string; lineNumber: number; expectedLine: string; expectedVersion: string; done: boolean }
 export interface TaskResult { status: number; data: { error: string; stage?: string; code?: string } | { done: boolean; lineNumber: number; line: string; version: string } }
 export function errorCode(error: unknown): string | undefined { return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined; }
-const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_POLICY_EVENTS = 10000;
 const TASK_LINE = /^(\s*(?:[-*+]\s+|\d+[.)]\s+)\[)([ xX])(\][^\r\n]*)(\r?)$/;
 
@@ -42,8 +41,8 @@ export async function updateTask(ctx: HostContext, input?: unknown): Promise<Tas
   if (typeof sessionId !== 'string' || !sessionId || typeof slug !== 'string' ||
       slug.length > 160 || slug.toLowerCase() === 'archive' ||
       !/^[a-z0-9][a-z0-9._-]*$/i.test(slug) ||
-      typeof lineNumber !== 'number' || !Number.isInteger(lineNumber) || lineNumber < 1 || lineNumber > 500 ||
-      typeof expectedLine !== 'string' || expectedLine.length > 4000 ||
+      typeof lineNumber !== 'number' || !Number.isSafeInteger(lineNumber) || lineNumber < 1 ||
+      typeof expectedLine !== 'string' ||
       typeof expectedVersion !== 'string' || !expectedVersion || typeof done !== 'boolean') {
     return { status: 400, data: { error: 'invalid-task' } };
   }
@@ -71,7 +70,6 @@ export async function updateTask(ctx: HostContext, input?: unknown): Promise<Tas
   }
   const info = await ctx.fs.stat(target);
   if (!info || info.type !== 'file') return { status: 404, data: { error: 'task-file-unavailable' } };
-  if (info.size === undefined || info.size > MAX_FILE_BYTES) return { status: 413, data: { error: 'task-file-too-large' } };
   if (info.version !== expectedVersion) return { status: 409, data: { error: 'task-file-changed' } };
   const content = await ctx.fs.readText(target);
   const lines = content.split('\n');

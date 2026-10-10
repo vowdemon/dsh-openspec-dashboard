@@ -1,5 +1,5 @@
 export function watchBoard(sessionId: string, onChange: () => void, onError: (key: string) => void, delay = 180, initialRetry = 1000): () => void {
-  if (typeof EventSource !== 'function') return () => {};
+  if (typeof EventSource !== 'function') { onError('watchError'); return () => {}; }
   let active = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -35,6 +35,11 @@ export function watchBoard(sessionId: string, onChange: () => void, onError: (ke
       if (active && source === next) { retryDelay = initialRetry; onError(''); schedule(); }
     });
     next.addEventListener('changed', () => { if (source === next) schedule(); });
+    next.addEventListener('unavailable', () => {
+      if (!active || source !== next) return;
+      onError('watchError');
+      next.close(); source = undefined; retry();
+    });
     next.onerror = () => {
       if (!active || source !== next) return;
       onError('watchError');

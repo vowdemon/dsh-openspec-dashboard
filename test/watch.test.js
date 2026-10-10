@@ -94,7 +94,7 @@ test('same workspace fans out through one group; other workspaces remain isolate
 test('archive-heavy workspace watches directories, not hundreds of individual Markdown files', async () => {
   const fs = fixture();
   for (let i = 0; i < 300; i++) fs.add('/one/openspec/changes/archive/doc-' + i + '.md', 'file');
-  const hub = createWatchHub(fs, { maxPaths: 8, debounceMs: 5 });
+  const hub = createWatchHub(fs, { debounceMs: 5 });
   const events = [];
   const off = await hub.subscribe('/one', (event) => events.push(event));
   assert.equal(fs.watchers.size, 5);
@@ -218,33 +218,33 @@ test('symlink and outside-root children are never watched', async () => {
   await off(); await hub.close();
 });
 
-test('path, root, subscriber and depth caps report unavailable without unbounded watches', async () => {
+test('paths, depth, roots and subscribers exceed old caps while sharing and releasing watchers', async () => {
   const fs = fixture();
+  for (let i = 0; i < 9; i++) { fs.add('/extra-' + i); fs.add('/extra-' + i + '/openspec'); }
+  for (let i = 0; i < 260; i++) fs.add('/one/openspec/specs/spec-' + i);
+  let path = '/one/openspec/specs';
+  for (let i = 0; i < 10; i++) { path += '/nested-' + i; fs.add(path); }
+  const hub = createWatchHub(fs, { debounceMs: 5 });
   const events = [];
-  const hub = createWatchHub(fs, { maxPaths: 2 });
-  const off = await hub.subscribe('/one', (event) => events.push(event));
-  assert.deepEqual(events, ['unavailable']);
+  const offs = [await hub.subscribe('/one', (event) => events.push(event))];
+  for (let i = 0; i < 70; i++) offs.push(await hub.subscribe('/one', (event) => events.push(event)));
+  for (let i = 0; i < 9; i++) offs.push(await hub.subscribe('/extra-' + i, (event) => events.push(event)));
+  assert.ok(fs.paths().size > 256);
+  assert.ok(fs.paths().has(path));
+  assert.deepEqual(events, []);
+  fs.fire(path); await delay();
+  assert.equal(events.length, 71);
+  assert.ok(events.every((event) => event === 'changed'));
+  await Promise.all(offs.map((off) => off())); await hub.close();
   assert.equal(fs.watchers.size, 0);
-  await off(); await hub.close();
-  const capped = createWatchHub(fs, { maxRoots: 1, maxSubscribers: 1 });
-  const first = [], second = [], third = [];
-  const u1 = await capped.subscribe('/one', (event) => first.push(event));
-  assert.deepEqual(first, []);
-  const u2 = await capped.subscribe('/two', (event) => second.push(event));
-  const u3 = await capped.subscribe('/one', (event) => third.push(event));
-  assert.deepEqual(second, ['unavailable']);
-  assert.deepEqual(third, ['unavailable']);
-  await u1(); await u2(); await u3(); await capped.close();
-  const depthCapped = createWatchHub(fs, { maxDepth: 0 });
-  const depthEvents = [];
-  const offDepth = await depthCapped.subscribe('/one', (event) => depthEvents.push(event));
-  assert.deepEqual(depthEvents, ['unavailable']);
-  await offDepth(); await depthCapped.close();
 });
 
-test('runtime path cap makes the shared watch unavailable and releases all watchers', async () => {
+test('runtime watcher allocation failure reports unavailable and releases all watchers', async () => {
   const fs = fakeFs(); fs.add('/work'); fs.add('/work/openspec');
-  const events = [], hub = createWatchHub(fs, { maxPaths: 3, debounceMs: 5 });
+  const watch = fs.watch;
+  fs.watch = (target, ...rest) => target.displayPath === '/work/openspec/b'
+    ? Promise.reject(new Error('OS watcher exhausted')) : watch(target, ...rest);
+  const events = [], hub = createWatchHub(fs, { debounceMs: 5 });
   const off = await hub.subscribe('/work', (event) => events.push(event));
   fs.add('/work/openspec/a'); fs.fire('/work/openspec'); await delay();
   assert.equal(fs.watchers.size, 3);

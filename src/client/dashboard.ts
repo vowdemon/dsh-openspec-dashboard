@@ -18,6 +18,7 @@ function Dashboard({ sessionId, useSessions, useTabInfo, t }: { sessionId: strin
   const [taskFeedback, setTaskFeedback] = React.useState<Record<string, { lineNumber: number; message: string } | null>>({});
   const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>({});
   const [pendingTasks, setPendingTasks] = React.useState<Record<string, { lineNumber: number; done: boolean } | null>>({});
+  const [watchState, setWatchState] = React.useState<{ sessionId: string; cwd: string; failed: boolean } | null>(null);
   const pendingRef = React.useRef(new Set<string>());
   const taskAbort = React.useRef(new AbortController());
   React.useEffect(() => () => taskAbort.current.abort(), []);
@@ -37,8 +38,10 @@ function Dashboard({ sessionId, useSessions, useTabInfo, t }: { sessionId: strin
   }, [sessionId, cwd, revision]);
   React.useEffect(() => {
     if (!cwd) return;
+    setWatchState({ sessionId, cwd, failed: false });
     // Reconnect internally; a transient stream interruption does not displace the board.
-    return watchBoard(sessionId, () => invalidate((n) => n + 1), () => {});
+    return watchBoard(sessionId, () => invalidate((n) => n + 1), (key) =>
+      setWatchState({ sessionId, cwd, failed: !!key }));
   }, [sessionId, cwd]);
   function openFile(path: string) {
     try { tab.actions.openResource(fileAddressFor(sessionId, cwd || '', path)); setOpenError(false); }
@@ -108,9 +111,13 @@ function Dashboard({ sessionId, useSessions, useTabInfo, t }: { sessionId: strin
   const countText = Object.entries(counts).filter(([, count]) => count > 0)
     .map(([key, count]) => count + t('countUnit') + t(key)).join(' / ');
   const showControls = Boolean(board && !board.missing && !currentState.loading && !currentState.noWorkspace && !currentState.error);
+  const watchFailed = !!cwd && watchState?.sessionId === sessionId && watchState.cwd === cwd && watchState.failed;
   return h('div', { className: 'osd', 'data-openspec-dashboard': true },
     h('div', { className: 'osd-controls' },
-      h('header', { className: 'osd-head' }, h('h1', null, t('title'))),
+      h('header', { className: 'osd-head', 'data-watch-failed': watchFailed },
+        h('h1', null, t('title')),
+        watchFailed && h('span', { className: 'osd-watch-failed', role: 'status',
+          'aria-label': t('watchFailed'), title: t('watchFailed') }, t('watchFailed'))),
       h('nav', { className: 'osd-view', 'aria-label': t('title') }, ['changes', 'specs'].map((name) =>
         h('button', { key: name, type: 'button', className: 'osd-control', 'aria-pressed': view === name,
           onClick: () => { setView(name); setQuery(''); } }, t(name === 'changes' ? 'changesView' : 'specsView')))),

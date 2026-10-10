@@ -3,7 +3,9 @@ export const css = `
   .osd * { box-sizing:border-box; } .osd button,.osd input { font:inherit; }
   .osd-controls { position:sticky; top:0; z-index:2; padding-top:16px; background:var(--dsw-alias-bg-base); box-shadow:0 1px 0 var(--dsw-alias-border-l1); }
   .osd h1 { margin:0; font-size:17px; font-weight:650; } .osd-muted { color:var(--dsw-alias-label-secondary); }
-  .osd-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; }
+  .osd-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; flex-wrap:nowrap; white-space:nowrap; min-width:0; }
+  .osd-head h1 { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .osd-watch-failed { flex:0 1 auto; min-width:0; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; line-height:1.2; color:var(--dsw-alias-label-secondary); }
   .osd-control { background:transparent; border:0; color:inherit; cursor:pointer; border-radius:8px; padding:6px 9px; }
   .osd-control:hover,.osd-row:hover,.osd-file:hover { background:var(--dsw-alias-bg-layer-2); }
   .osd-control:focus-visible,.osd-row:focus-visible,.osd-file:focus-visible,.osd-search:focus-visible { outline:2px solid var(--dsw-alias-brand-primary); outline-offset:1px; }

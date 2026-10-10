@@ -14,11 +14,9 @@ export interface Remote { workspaceFiles: {
  read(sessionId: string, path: string, range: { offset: number; limit: number }, signal: AbortSignal): Promise<RemoteResult<ReadValue>>;
 } }
 export interface TaskWriteResult { lineNumber: number; done: boolean; line: string; version: string }
-const MAX_CHANGES = 80;
-const MAX_SPECS = 100;
 const MAX_SPEC_SUMMARY_READS = 4;
-const MAX_FILES = 120;
-const MAX_LINES = 500;
+const READ_PAGE_LINES = 500;
+const CHANGE_READ_CONCURRENCY = 4;
 export function parseTaskGroups(text: string): TaskGroup[] {
   const groups: TaskGroup[] = [];
   let current: TaskGroup | null = null;
@@ -156,17 +154,31 @@ export async function loadBoard(remote: Remote, sessionId: string, cwd: string, 
     if (optional && isMissing(result.error)) return null;
     throw new Error(failure(result));
   }
-  async function read(path: string, warnOnTruncation = false): Promise<{ text: string; exists: boolean; version: string | null; eof: boolean }> {
-    const result = await remote.workspaceFiles.read(sessionId, path, { offset: 1, limit: MAX_LINES }, signal);
-    if (!result.ok) {
-      if (!isMissing(result.error)) warnings.push(path);
-      return { text: '', exists: false, version: null, eof: true };
+  async function read(path: string, allLines = false): Promise<{ text: string; exists: boolean; version: string | null; eof: boolean }> {
+    let offset = 1;
+    let text = '';
+    let version: string | null = null;
+    for (;;) {
+      if (signal.aborted) throw new Error('Aborted');
+      const result = await remote.workspaceFiles.read(sessionId, path, { offset, limit: READ_PAGE_LINES }, signal);
+      if (!result.ok) {
+        if (offset > 1) throw new Error('File changed during read');
+        if (!isMissing(result.error)) warnings.push(path);
+        return { text: '', exists: false, version: null, eof: true };
+      }
+      const page = result.value;
+      const currentVersion = page.version || null;
+      if (offset > 1 && currentVersion !== version) throw new Error('File changed during read');
+      version = currentVersion;
+      if (offset > 1 && text && !text.endsWith('\n')) text += '\n';
+      text += page.text;
+      if (page.eof || !allLines) return { text, exists: true, version, eof: page.eof };
+      const lines = page.text.split('\n').length - Number(page.text.endsWith('\n'));
+      if (!page.text || lines < 1) throw new Error('Empty page during read');
+      offset += lines;
     }
-    if (!result.value.eof && warnOnTruncation) warnings.push(path);
-    return { text: result.value.text, exists: true, version: result.value.version || null,
-      eof: result.value.eof };
   }
-  async function markdownFiles(directory: string, prefix: string, depth = 0): Promise<BoardFile[]> {
+  async function markdownFiles(directory: string, prefix: string): Promise<BoardFile[]> {
     if (signal.aborted) throw new Error('Aborted');
     let listing;
     try { listing = await list(directory, true); }
@@ -175,11 +187,10 @@ export async function loadBoard(remote: Remote, sessionId: string, cwd: string, 
     if (listing.truncated) warnings.push(directory);
     let files = listing.entries.filter((entry) => entry.type === 'file' && /\.md$/i.test(entry.name))
       .map((entry) => ({ relative: prefix + entry.name, path: join(directory, entry.name) }));
-    if (depth < 3) for (const entry of listing.entries) {
-      if (files.length >= MAX_FILES) break;
-      if (entry.type === 'directory') files = files.concat(await markdownFiles(join(directory, entry.name), prefix + entry.name + '/', depth + 1));
+    for (const entry of listing.entries) {
+      if (entry.type === 'directory') files = files.concat(await markdownFiles(join(directory, entry.name), prefix + entry.name + '/'));
     }
-    return files.slice(0, MAX_FILES);
+    return files;
   }
   const [changeListing, specListing] = await Promise.all([list(changesPath, true), list(join(root, 'specs'), true)]);
   if (!changeListing && !specListing) return { missing: true, changes: [], specs: [], warnings };
@@ -192,31 +203,33 @@ export async function loadBoard(remote: Remote, sessionId: string, cwd: string, 
     ...(archiveListing?.entries || []).filter((entry) => entry.type === 'directory')
       .map((entry) => ({ slug: entry.name, archived: true, base: archivePath })),
   ];
-  const limited = directories.filter((item) => !item.archived).length > MAX_CHANGES ||
-    directories.filter((item) => item.archived).length > MAX_CHANGES ||
-    !!changeListing?.truncated || !!archiveListing?.truncated || !!specListing?.truncated;
-  const selected = sortChanges(sortChanges(directories.filter((item) => !item.archived)).slice(0, MAX_CHANGES)
-    .concat(sortChanges(directories.filter((item) => item.archived)).slice(0, MAX_CHANGES)));
-  const changes: Change[] = [];
-  for (const { slug, archived: isArchived, base } of selected) {
-    if (signal.aborted) throw new Error('Aborted');
-    const directory = join(base, slug);
-    const [proposal, tasks, files] = await Promise.all([
-      read(join(directory, 'proposal.md')), read(join(directory, 'tasks.md'), true),
-      markdownFiles(directory, ''),
-    ]);
-    const groups = parseTaskGroups(tasks.text);
-    const taskItems = groups.flatMap((group) => group.items);
-    changes.push({ slug, archived: isArchived, directory,
-      title: slug, summary: summaryFrom(proposal.text), groups,
-      tasks: taskItems, tasksPath: tasks.exists ? join(directory, 'tasks.md') : null,
-      tasksVersion: tasks.version, tasksTruncated: tasks.exists && !tasks.eof,
-      done: taskItems.filter((item) => item.done).length, files: sortChangeFiles(files) });
+  const limited = !!changeListing?.truncated || !!archiveListing?.truncated || !!specListing?.truncated;
+  const selected = sortChanges(directories);
+  const changes: Change[] = new Array(selected.length);
+  let nextChange = 0;
+  async function readChanges(): Promise<void> {
+    while (nextChange < selected.length) {
+      if (signal.aborted) throw new Error('Aborted');
+      const index = nextChange++;
+      const { slug, archived: isArchived, base } = selected[index];
+      const directory = join(base, slug);
+      const [proposal, tasks, files] = await Promise.all([
+        read(join(directory, 'proposal.md')), read(join(directory, 'tasks.md'), true),
+        markdownFiles(directory, ''),
+      ]);
+      const groups = parseTaskGroups(tasks.text);
+      const taskItems = groups.flatMap((group) => group.items);
+      changes[index] = { slug, archived: isArchived, directory,
+        title: slug, summary: summaryFrom(proposal.text), groups,
+        tasks: taskItems, tasksPath: tasks.exists ? join(directory, 'tasks.md') : null,
+        tasksVersion: tasks.version, tasksTruncated: tasks.exists && !tasks.eof,
+        done: taskItems.filter((item) => item.done).length, files: sortChangeFiles(files) };
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(CHANGE_READ_CONCURRENCY, selected.length) }, () => readChanges()));
   const specs: Spec[] = [];
-  async function collectSpecs(directory: string, prefix: string, depth: number): Promise<void> {
+  async function collectSpecs(directory: string, prefix: string): Promise<void> {
     if (signal.aborted) throw new Error('Aborted');
-    if (specs.length >= MAX_SPECS) return;
     const listing = await list(directory, true).catch((error) => { warnings.push(String(error)); return null; });
     if (!listing) return;
     if (listing.truncated) warnings.push(directory);
@@ -227,9 +240,9 @@ export async function loadBoard(remote: Remote, sessionId: string, cwd: string, 
       const text = primary ? await read(primary.path) : { text: '' };
       specs.push({ name: prefix, summary: summaryFrom(text.text), files: sortChangeFiles(files), changes: [] });
     }
-    if (depth < 4) for (const entry of listing.entries) {
-      if (entry.type === 'directory' && specs.length < MAX_SPECS)
-        await collectSpecs(join(directory, entry.name), prefix ? prefix + '/' + entry.name : entry.name, depth + 1);
+    for (const entry of listing.entries) {
+      if (entry.type === 'directory')
+        await collectSpecs(join(directory, entry.name), prefix ? prefix + '/' + entry.name : entry.name);
     }
   }
   if (specListing) {
@@ -237,10 +250,10 @@ export async function loadBoard(remote: Remote, sessionId: string, cwd: string, 
       .map((entry) => ({ relative: entry.name, path: join(root, 'specs/' + entry.name) }));
     if (rootFiles.length) specs.push({ name: 'specs', files: rootFiles, changes: [] });
     for (const entry of specListing.entries) if (entry.type === 'directory')
-      await collectSpecs(join(root, 'specs/' + entry.name), entry.name, 1);
+      await collectSpecs(join(root, 'specs/' + entry.name), entry.name);
   }
   const aggregated = aggregateSpecs(specs, changes);
-  const visibleSpecs = aggregated.slice(0, MAX_SPECS);
+  const visibleSpecs = aggregated;
   for (const spec of visibleSpecs) {
     if (spec.files.length || !spec.changes.length) continue;
     const files = spec.changes.flatMap((source) => source.files);
@@ -256,5 +269,5 @@ export async function loadBoard(remote: Remote, sessionId: string, cwd: string, 
     }
   }
   return { missing: false, changes, specs: visibleSpecs, warnings,
-    limited: limited || specs.length >= MAX_SPECS || aggregated.length > MAX_SPECS };
+    limited };
 }

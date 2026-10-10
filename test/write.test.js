@@ -44,6 +44,20 @@ test('one checkbox change preserves the rest of tasks.md including CRLF', async 
   assert.equal(record.writes, 1);
 });
 
+test('large task files and lines beyond 500 remain safely editable', async () => {
+  const longTask = '- [ ] ' + 'A'.repeat(5000);
+  const lines = ['# Tasks', ...Array.from({ length: 500 }, (_, i) => 'Background ' + i), longTask,
+    'Footer ' + 'z'.repeat(1024 * 1024)];
+  const original = lines.join('\n');
+  const { ctx, record } = fixture(original);
+  const input = { ...valid, lineNumber: 502, expectedLine: longTask };
+  const result = await updateTask(ctx, input);
+  assert.equal(result.status, 200);
+  assert.equal(record.content, original.replace(longTask, '- [x] ' + 'A'.repeat(5000)));
+  assert.equal(record.writes, 1);
+  assert.equal((await updateTask(ctx, { ...input, lineNumber: 2 })).status, 409);
+});
+
 test('stale version or changed task line never overwrites external edits', async () => {
   const { ctx, record } = fixture();
   record.version = 'v2';

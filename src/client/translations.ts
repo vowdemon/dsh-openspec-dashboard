@@ -1,6 +1,6 @@
 export const copy = {
   zh: {
-    title: 'OpenSpec 看板', guide: 'OpenSpec 看板', description: '变更进度和规格状态',
+    title: 'OpenSpec 看板', guide: 'OpenSpec 看板', description: '变更进度和规格状态', watchFailed: '更新失效',
     changesView: '变更', specsView: '规格', current: '当前', active: '活动', archive: '归档', all: '全部',
     files: '文件', tasks: '任务', incompleteOnly: '仅看未完成', search: '搜索名称',
     countUnit: '个',
@@ -19,7 +19,7 @@ export const copy = {
     readError: '暂时无法读取看板，请重新加载页面。', openError: '暂时无法打开文档',
   },
   en: {
-    title: 'OpenSpec', guide: 'OpenSpec dashboard', description: 'Change progress and spec status',
+    title: 'OpenSpec', guide: 'OpenSpec dashboard', description: 'Change progress and spec status', watchFailed: 'Updates unavailable',
     changesView: 'Change', specsView: 'Spec', current: 'Current', active: 'Active', archive: 'Archive', all: 'All',
     files: 'Files', tasks: 'Tasks', incompleteOnly: 'Incomplete only', search: 'Search names',
     countUnit: ' ',

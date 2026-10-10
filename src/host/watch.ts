@@ -2,20 +2,15 @@ import type { HostFs, FsInfo, FsTarget, StopWatching, WatchHub } from './types.j
 
 type WatchEvent = 'changed' | 'unavailable';
 type Member = { notify: (event: WatchEvent) => void };
-type Node = { target: FsTarget; parentKey: string | null; depth: number; children: Set<string>; close: StopWatching; version?: string };
+type Node = { target: FsTarget; parentKey: string | null; children: Set<string>; close: StopWatching; version?: string };
 type Group = { root: FsTarget; members: Set<Member>; controller: AbortController; nodes: Map<string, Node>; dirty: Set<string>; rebind: Set<string>; dead: boolean; failed: boolean; timer?: ReturnType<typeof setTimeout>; scanning?: Promise<void>; starting?: Promise<void>; stopping?: Promise<void> };
 type Entry = { target: FsTarget; version?: string };
 const errorCode = (error: unknown): string | undefined => error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
-type Limits = { maxRoots: number; maxSubscribers: number; maxPaths: number; maxDepth: number; debounceMs: number };
-
-/** Bounded, shared OpenSpec invalidation watchers. No file contents or paths reach subscribers. */
-const DEFAULTS = { maxRoots: 8, maxSubscribers: 64, maxPaths: 256, maxDepth: 8, debounceMs: 120 };
-
-export function createWatchHub(fs: HostFs, opts: Partial<Limits> = {}): WatchHub {
-  const limits = { ...DEFAULTS, ...opts };
+/** Shared OpenSpec invalidation watchers. No file contents or paths reach subscribers. */
+export function createWatchHub(fs: HostFs, opts: { debounceMs?: number } = {}): WatchHub {
+  const debounceMs = opts.debounceMs ?? 120;
   const groups = new Map<string, Group>();
   let closed = false;
-  let subscribers = 0;
   const append = (directory: FsTarget, name: string) => directory.displayPath.replace(/[/\\]+$/, '') + '/' + name;
   const validName = (name: string) => typeof name === 'string' && !!name && name !== '.' &&
     name !== '..' && !/[/\\\0]/.test(name);
@@ -71,7 +66,7 @@ export function createWatchHub(fs: HostFs, opts: Partial<Limits> = {}): WatchHub
       if (group.dead) return;
       emit(group, 'changed');
       drain(group);
-    }, limits.debounceMs);
+    }, debounceMs);
   }
 
   function drain(group: Group): void {
@@ -111,11 +106,9 @@ export function createWatchHub(fs: HostFs, opts: Partial<Limits> = {}): WatchHub
     await node.close();
   }
 
-  async function add(group: Group, target: FsTarget, parentKey: string | null, depth: number, version?: string): Promise<void> {
+  async function add(group: Group, target: FsTarget, parentKey: string | null, version?: string): Promise<void> {
     if (group.dead || group.nodes.has(target.targetKey)) return;
-    if (group.nodes.size >= limits.maxPaths) throw new Error('Watch path limit exceeded');
-    if (depth > limits.maxDepth) throw new Error('Watch depth limit exceeded');
-    const node: Node = { target, parentKey, depth, children: new Set<string>(), close: async () => {}, version };
+    const node: Node = { target, parentKey, children: new Set<string>(), close: async () => {}, version };
     let earlyEvent = false, earlyError: { code?: string } | null | undefined;
     const close = await fs.watch(target, (error) => {
       if (!group.nodes.has(target.targetKey)) {
@@ -174,8 +167,7 @@ export function createWatchHub(fs: HostFs, opts: Partial<Limits> = {}): WatchHub
     }
     for (const [key, entry] of wanted) {
       if (group.dead) return;
-      if (!group.nodes.has(key)) await add(group, entry.target, parent.target.targetKey,
-        parent.depth + 1, entry.version);
+      if (!group.nodes.has(key)) await add(group, entry.target, parent.target.targetKey, entry.version);
     }
   }
 
@@ -191,10 +183,6 @@ export function createWatchHub(fs: HostFs, opts: Partial<Limits> = {}): WatchHub
     }
     if (closed || signal?.aborted) return async () => {};
     let group = groups.get(root.targetKey);
-    if (subscribers >= limits.maxSubscribers || (!group && groups.size >= limits.maxRoots)) {
-      notify('unavailable');
-      return async () => {};
-    }
     if (!group) {
       group = { root, members: new Set(), controller: new AbortController(), nodes: new Map(),
         dirty: new Set(), rebind: new Set(), dead: false, failed: false,
@@ -203,14 +191,12 @@ export function createWatchHub(fs: HostFs, opts: Partial<Limits> = {}): WatchHub
     }
     const member = { notify };
     group.members.add(member);
-    subscribers++;
     let removed = false;
     const unsubscribe = async () => {
       if (removed) return;
       removed = true;
       signal?.removeEventListener('abort', onAbort);
       group.members.delete(member);
-      subscribers--;
       if (!group.members.size) await stop(group);
     };
     const onAbort = () => { void unsubscribe(); };
@@ -220,7 +206,7 @@ export function createWatchHub(fs: HostFs, opts: Partial<Limits> = {}): WatchHub
       group.starting = (async () => {
         const info = await fs.stat(root, group.controller.signal);
         if (info?.type !== 'directory') throw new Error('Workspace unavailable');
-        await add(group, root, null, -1, identity(info));
+        await add(group, root, null, identity(info));
         const node = group.nodes.get(root.targetKey);
         if (node) await reconcile(group, node);
       })().catch(() => fail(group)).finally(() => { if (group.dirty.size) drain(group); });
